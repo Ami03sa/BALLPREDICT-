@@ -21,6 +21,11 @@ async def get_game_preview(game_id: str) -> dict:
     return await live_game_service.get_game_preview(game_id)
 
 
+@router.get("/{game_id}/players/{player_id}")
+async def get_player_detail(game_id: str, player_id: str):
+    return await live_game_service.get_player_detail(game_id, player_id)
+
+
 @router.get("/{game_id}")
 async def get_game_snapshot(game_id: str):
     return await live_game_service.get_game_snapshot(game_id)

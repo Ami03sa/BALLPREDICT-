@@ -1,7 +1,5 @@
 import { useEffect, useState } from "react";
-import { CoachingAdjustmentPanel } from "../components/CoachingAdjustmentPanel";
 import { InsightPanel } from "../components/InsightPanel";
-import { MomentumCard } from "../components/MomentumCard";
 import { PlayerProjectionTable } from "../components/PlayerProjectionTable";
 import { PossessionFeed } from "../components/PossessionFeed";
 import { QuarterProjectionTable } from "../components/QuarterProjectionTable";
@@ -46,9 +44,11 @@ function TeamPreviewCard({
 export function GameDetailPage({
   gameId,
   onBack,
+  onOpenPlayer,
 }: {
   gameId: string;
   onBack: () => void;
+  onOpenPlayer: (playerId: string) => void;
 }) {
   const [preview, setPreview] = useState<GamePreview>(mockPreview);
   const [snapshot, setSnapshot] = useState<Snapshot>(mockSnapshot);
@@ -175,21 +175,20 @@ export function GameDetailPage({
           awayTeam={snapshot.awayTeam}
         />
 
-        <PlayerProjectionTable players={snapshot.playerProjections} />
+        <InsightPanel
+          insights={snapshot.insights}
+          title="AI Game Insights"
+          subtitle="How the model sees the matchup unfolding"
+        />
+
+        <PlayerProjectionTable players={snapshot.playerProjections} onOpenPlayer={onOpenPlayer} />
 
         <div className="grid gap-6 xl:grid-cols-[1.3fr_0.9fr]">
           <div className="space-y-6">
             <QuarterProjectionTable homeTeam={snapshot.homeTeam} awayTeam={snapshot.awayTeam} />
             <WinProbabilityChart data={snapshot.winProbabilitySeries} />
-            <CoachingAdjustmentPanel players={snapshot.playerProjections} />
           </div>
           <div className="space-y-6">
-            <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-1">
-              {snapshot.playerProjections.map((player) => (
-                <MomentumCard key={player.playerId} player={player} />
-              ))}
-            </div>
-            <InsightPanel insights={snapshot.insights} />
             <PossessionFeed events={snapshot.possessionFeed} />
           </div>
         </div>
@@ -197,4 +196,3 @@ export function GameDetailPage({
     </main>
   );
 }
-

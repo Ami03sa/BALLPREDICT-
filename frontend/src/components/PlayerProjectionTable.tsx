@@ -1,6 +1,12 @@
 import type { PlayerProjection } from "../types";
 
-export function PlayerProjectionTable({ players }: { players: PlayerProjection[] }) {
+export function PlayerProjectionTable({
+  players,
+  onOpenPlayer,
+}: {
+  players: PlayerProjection[];
+  onOpenPlayer: (playerId: string) => void;
+}) {
   return (
     <section className="panel p-6">
       <div className="mb-4 flex items-center justify-between">
@@ -24,11 +30,16 @@ export function PlayerProjectionTable({ players }: { players: PlayerProjection[]
           </thead>
           <tbody>
             {players.map((player) => (
-              <tr key={player.playerId} className="border-t border-white/6 bg-white/[0.02]">
+              <tr
+                key={player.playerId}
+                className="cursor-pointer border-t border-white/6 bg-white/[0.02] transition hover:bg-white/[0.06]"
+                onClick={() => onOpenPlayer(player.playerId)}
+              >
                 <td className="px-4 py-4">
                   <div>
                     <p className="font-medium text-white">{player.playerName}</p>
                     <p className="text-xs uppercase tracking-[0.2em] text-muted">{player.teamId}</p>
+                    <p className="mt-1 text-xs text-electric">Open player page</p>
                   </div>
                 </td>
                 <td className="px-4 py-4 text-ink">{player.projectedStats.mean.points}</td>
@@ -50,4 +61,3 @@ export function PlayerProjectionTable({ players }: { players: PlayerProjection[]
     </section>
   );
 }
-

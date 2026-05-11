@@ -1,6 +1,6 @@
 from datetime import datetime
 
-from app.schemas.game import GameSnapshot, SimulationResponse
+from app.schemas.game import GameSnapshot, PlayerDetailResponse, PlayerQuarterProjection, SimulationResponse
 from app.services.projection_service import projection_service
 from app.simulation.coaching_engine import coaching_engine
 from app.simulation.state import GameContext, PlayerGameState, TeamGameState
@@ -71,6 +71,48 @@ class LiveGameService:
                         drive_frequency=0.22,
                         paint_touches=5,
                     ),
+                    PlayerGameState(
+                        player_id="draymond",
+                        player_name="Draymond Green",
+                        team_id="gsw",
+                        usage_rate=0.17,
+                        assists=0,
+                        rebounds=0,
+                        field_goal_pct=0.48,
+                        three_point_pct=0.34,
+                        fatigue_index=0.16,
+                        momentum_score=0.47,
+                        matchup_difficulty=0.53,
+                        drive_frequency=0.10,
+                        paint_touches=3,
+                    ),
+                    PlayerGameState(
+                        player_id="podz",
+                        player_name="Brandin Podziemski",
+                        team_id="gsw",
+                        usage_rate=0.16,
+                        field_goal_pct=0.46,
+                        three_point_pct=0.37,
+                        fatigue_index=0.12,
+                        momentum_score=0.44,
+                        matchup_difficulty=0.51,
+                        drive_frequency=0.12,
+                        paint_touches=2,
+                    ),
+                    PlayerGameState(
+                        player_id="hield",
+                        player_name="Buddy Hield",
+                        team_id="gsw",
+                        usage_rate=0.18,
+                        threes_made=0,
+                        field_goal_pct=0.45,
+                        three_point_pct=0.39,
+                        fatigue_index=0.11,
+                        momentum_score=0.49,
+                        matchup_difficulty=0.52,
+                        drive_frequency=0.08,
+                        paint_touches=1,
+                    ),
                 ],
             ),
             away_team=TeamGameState(
@@ -125,6 +167,45 @@ class LiveGameService:
                         matchup_difficulty=0.49,
                         drive_frequency=0.19,
                         paint_touches=4,
+                    ),
+                    PlayerGameState(
+                        player_id="klay",
+                        player_name="Klay Thompson",
+                        team_id="dal",
+                        usage_rate=0.19,
+                        field_goal_pct=0.44,
+                        three_point_pct=0.38,
+                        fatigue_index=0.13,
+                        momentum_score=0.46,
+                        matchup_difficulty=0.56,
+                        drive_frequency=0.07,
+                        paint_touches=1,
+                    ),
+                    PlayerGameState(
+                        player_id="gafford",
+                        player_name="Daniel Gafford",
+                        team_id="dal",
+                        usage_rate=0.15,
+                        field_goal_pct=0.65,
+                        three_point_pct=0.0,
+                        fatigue_index=0.14,
+                        momentum_score=0.42,
+                        matchup_difficulty=0.48,
+                        drive_frequency=0.06,
+                        paint_touches=6,
+                    ),
+                    PlayerGameState(
+                        player_id="washington",
+                        player_name="P.J. Washington",
+                        team_id="dal",
+                        usage_rate=0.17,
+                        field_goal_pct=0.46,
+                        three_point_pct=0.36,
+                        fatigue_index=0.12,
+                        momentum_score=0.45,
+                        matchup_difficulty=0.50,
+                        drive_frequency=0.11,
+                        paint_touches=3,
                     ),
                 ],
             ),
@@ -181,6 +262,39 @@ class LiveGameService:
                         drive_frequency=0.16,
                         paint_touches=7,
                     ),
+                    PlayerGameState(
+                        player_id="reaves",
+                        player_name="Austin Reaves",
+                        team_id="lal",
+                        usage_rate=0.23,
+                        momentum_score=0.51,
+                        fatigue_index=0.13,
+                        matchup_difficulty=0.52,
+                        drive_frequency=0.17,
+                        paint_touches=4,
+                    ),
+                    PlayerGameState(
+                        player_id="rui",
+                        player_name="Rui Hachimura",
+                        team_id="lal",
+                        usage_rate=0.17,
+                        momentum_score=0.43,
+                        fatigue_index=0.12,
+                        matchup_difficulty=0.53,
+                        drive_frequency=0.12,
+                        paint_touches=3,
+                    ),
+                    PlayerGameState(
+                        player_id="vando",
+                        player_name="Jarred Vanderbilt",
+                        team_id="lal",
+                        usage_rate=0.11,
+                        momentum_score=0.38,
+                        fatigue_index=0.12,
+                        matchup_difficulty=0.58,
+                        drive_frequency=0.09,
+                        paint_touches=2,
+                    ),
                 ],
             ),
             away_team=TeamGameState(
@@ -220,6 +334,39 @@ class LiveGameService:
                         matchup_difficulty=0.48,
                         drive_frequency=0.22,
                         paint_touches=4,
+                    ),
+                    PlayerGameState(
+                        player_id="holiday",
+                        player_name="Jrue Holiday",
+                        team_id="bos",
+                        usage_rate=0.18,
+                        momentum_score=0.49,
+                        fatigue_index=0.11,
+                        matchup_difficulty=0.46,
+                        drive_frequency=0.12,
+                        paint_touches=3,
+                    ),
+                    PlayerGameState(
+                        player_id="white",
+                        player_name="Derrick White",
+                        team_id="bos",
+                        usage_rate=0.20,
+                        momentum_score=0.52,
+                        fatigue_index=0.12,
+                        matchup_difficulty=0.45,
+                        drive_frequency=0.14,
+                        paint_touches=2,
+                    ),
+                    PlayerGameState(
+                        player_id="porzingis",
+                        player_name="Kristaps Porzingis",
+                        team_id="bos",
+                        usage_rate=0.24,
+                        momentum_score=0.50,
+                        fatigue_index=0.15,
+                        matchup_difficulty=0.47,
+                        drive_frequency=0.08,
+                        paint_touches=5,
                     ),
                 ],
             ),
@@ -276,6 +423,39 @@ class LiveGameService:
                         drive_frequency=0.14,
                         paint_touches=5,
                     ),
+                    PlayerGameState(
+                        player_id="beal",
+                        player_name="Bradley Beal",
+                        team_id="phx",
+                        usage_rate=0.22,
+                        momentum_score=0.48,
+                        fatigue_index=0.14,
+                        matchup_difficulty=0.53,
+                        drive_frequency=0.16,
+                        paint_touches=3,
+                    ),
+                    PlayerGameState(
+                        player_id="allen",
+                        player_name="Grayson Allen",
+                        team_id="phx",
+                        usage_rate=0.14,
+                        momentum_score=0.39,
+                        fatigue_index=0.10,
+                        matchup_difficulty=0.50,
+                        drive_frequency=0.07,
+                        paint_touches=1,
+                    ),
+                    PlayerGameState(
+                        player_id="richards",
+                        player_name="Nick Richards",
+                        team_id="phx",
+                        usage_rate=0.12,
+                        momentum_score=0.35,
+                        fatigue_index=0.11,
+                        matchup_difficulty=0.56,
+                        drive_frequency=0.05,
+                        paint_touches=5,
+                    ),
                 ],
             ),
             away_team=TeamGameState(
@@ -315,6 +495,39 @@ class LiveGameService:
                         matchup_difficulty=0.50,
                         drive_frequency=0.18,
                         paint_touches=4,
+                    ),
+                    PlayerGameState(
+                        player_id="gordon",
+                        player_name="Aaron Gordon",
+                        team_id="den",
+                        usage_rate=0.17,
+                        momentum_score=0.41,
+                        fatigue_index=0.12,
+                        matchup_difficulty=0.49,
+                        drive_frequency=0.15,
+                        paint_touches=5,
+                    ),
+                    PlayerGameState(
+                        player_id="mpj",
+                        player_name="Michael Porter Jr.",
+                        team_id="den",
+                        usage_rate=0.21,
+                        momentum_score=0.45,
+                        fatigue_index=0.13,
+                        matchup_difficulty=0.47,
+                        drive_frequency=0.09,
+                        paint_touches=2,
+                    ),
+                    PlayerGameState(
+                        player_id="braun",
+                        player_name="Christian Braun",
+                        team_id="den",
+                        usage_rate=0.12,
+                        momentum_score=0.37,
+                        fatigue_index=0.11,
+                        matchup_difficulty=0.48,
+                        drive_frequency=0.11,
+                        paint_touches=2,
                     ),
                 ],
             ),
@@ -450,6 +663,111 @@ class LiveGameService:
     async def get_game_snapshot(self, game_id: str) -> GameSnapshot:
         context = self._contexts[game_id]
         return projection_service.build_snapshot(context)
+
+    async def get_player_detail(self, game_id: str, player_id: str) -> PlayerDetailResponse:
+        context = self._contexts[game_id]
+        snapshot = projection_service.build_snapshot(context)
+        projection = next(player for player in snapshot.player_projections if player.player_id == player_id)
+
+        if projection.team_id == context.home_team.team_id:
+            team = context.home_team
+            opponent = context.away_team
+        else:
+            team = context.away_team
+            opponent = context.home_team
+
+        stat_mean = projection.projected_stats.mean
+        quarter_breakdown = [
+            PlayerQuarterProjection(
+                quarter="Q1",
+                points=round(stat_mean.points * 0.27, 1),
+                assists=round(stat_mean.assists * 0.24, 1),
+                rebounds=round(stat_mean.rebounds * 0.24, 1),
+                threes_made=round(stat_mean.threes_made * 0.28, 1),
+            ),
+            PlayerQuarterProjection(
+                quarter="Q2",
+                points=round(stat_mean.points * 0.23, 1),
+                assists=round(stat_mean.assists * 0.22, 1),
+                rebounds=round(stat_mean.rebounds * 0.22, 1),
+                threes_made=round(stat_mean.threes_made * 0.22, 1),
+            ),
+            PlayerQuarterProjection(
+                quarter="Q3",
+                points=round(stat_mean.points * 0.24, 1),
+                assists=round(stat_mean.assists * 0.25, 1),
+                rebounds=round(stat_mean.rebounds * 0.25, 1),
+                threes_made=round(stat_mean.threes_made * 0.24, 1),
+            ),
+            PlayerQuarterProjection(
+                quarter="Q4",
+                points=round(stat_mean.points * 0.26, 1),
+                assists=round(stat_mean.assists * 0.29, 1),
+                rebounds=round(stat_mean.rebounds * 0.29, 1),
+                threes_made=round(stat_mean.threes_made * 0.26, 1),
+            ),
+        ]
+
+        return PlayerDetailResponse(
+            game_id=game_id,
+            player_id=projection.player_id,
+            player_name=projection.player_name,
+            team_id=projection.team_id,
+            team_name=team.team_name,
+            opponent_team_name=opponent.team_name,
+            coach_counter_summary=(
+                f"{opponent.coach_name} is the most likely coach to bend coverages around {projection.player_name}, "
+                "changing help location, ball-screen coverage, and late-clock matchup assignments."
+            ),
+            projection=projection,
+            quarter_breakdown=quarter_breakdown,
+            stat_profile=[
+                {"label": "Points", "live": projection.live_stats.points, "projected": stat_mean.points},
+                {"label": "Assists", "live": projection.live_stats.assists, "projected": stat_mean.assists},
+                {"label": "Rebounds", "live": projection.live_stats.rebounds, "projected": stat_mean.rebounds},
+                {"label": "3PM", "live": projection.live_stats.threes_made, "projected": stat_mean.threes_made},
+                {"label": "Turnovers", "live": projection.live_stats.turnovers, "projected": stat_mean.turnovers},
+            ],
+            matchup_factors=[
+                f"Usage load at {(stat_mean.usage_rate * 100):.0f}%",
+                f"{opponent.team_name} defensive rating {opponent.defensive_rating}",
+                f"{team.coach_name} pace baseline {team.pace}",
+                "weak-side help timing",
+                "rotation staggering leverage",
+            ],
+            confidence={
+                "floor_points": projection.projected_stats.low.points,
+                "median_points": projection.projected_stats.mean.points,
+                "ceiling_points": projection.projected_stats.high.points,
+                "pressure": projection.defensive_pressure,
+            },
+            player_insights=[
+                {
+                    "title": "Scoring Shape",
+                    "body": (
+                        f"{projection.player_name}'s projection is being driven by a high on-ball creation load, "
+                        "with the biggest value coming from early-clock paint touches and pull-up shot quality."
+                    ),
+                    "severity": "advantage",
+                },
+                {
+                    "title": "Defensive Response",
+                    "body": (
+                        f"{opponent.coach_name} is expected to vary help position and screen coverage once "
+                        f"{projection.player_name} strings together efficient touch sequences."
+                    ),
+                    "severity": "warning",
+                },
+                {
+                    "title": "Playmaking Spillover",
+                    "body": (
+                        "If the defense sends two to the ball, the projection shifts some scoring equity into assists "
+                        "and weak-side creation for teammates."
+                    ),
+                    "severity": "info",
+                },
+            ],
+        )
 
     async def simulate_matchup(self, home_team: str, away_team: str, strategy_tags: list[str]) -> SimulationResponse:
         context = next(iter(self._contexts.values()))

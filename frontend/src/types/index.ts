@@ -127,3 +127,38 @@ export type GamePreview = {
   gameFactors: string[];
   predictionSummary: string;
 };
+
+export type PlayerDetail = {
+  gameId: string;
+  playerId: string;
+  playerName: string;
+  teamId: string;
+  teamName: string;
+  opponentTeamName: string;
+  coachCounterSummary: string;
+  projection: PlayerProjection;
+  quarterBreakdown: {
+    quarter: string;
+    points: number;
+    assists: number;
+    rebounds: number;
+    threesMade: number;
+  }[];
+  statProfile: {
+    label: string;
+    live: number;
+    projected: number;
+  }[];
+  matchupFactors: string[];
+  confidence: {
+    floorPoints: number;
+    medianPoints: number;
+    ceilingPoints: number;
+    pressure: number;
+  };
+  playerInsights: {
+    title: string;
+    body: string;
+    severity: "info" | "warning" | "advantage";
+  }[];
+};

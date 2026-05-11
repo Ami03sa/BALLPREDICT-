@@ -112,3 +112,26 @@ class SimulationResponse(BaseModel):
     key_adjustments: list[CoachingAdjustment]
     player_edges: list[InsightCard]
 
+
+class PlayerQuarterProjection(BaseModel):
+    quarter: str
+    points: float
+    assists: float
+    rebounds: float
+    threes_made: float
+
+
+class PlayerDetailResponse(BaseModel):
+    game_id: str
+    player_id: str
+    player_name: str
+    team_id: str
+    team_name: str
+    opponent_team_name: str
+    coach_counter_summary: str
+    projection: PlayerProjection
+    quarter_breakdown: list[PlayerQuarterProjection]
+    stat_profile: list[dict[str, float | str]]
+    matchup_factors: list[str]
+    confidence: dict[str, float]
+    player_insights: list[InsightCard]

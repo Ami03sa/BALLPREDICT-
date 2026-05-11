@@ -1,6 +1,10 @@
 import type { Snapshot } from "../types";
 
-export function InsightPanel({ insights }: Pick<Snapshot, "insights">) {
+export function InsightPanel({
+  insights,
+  title = "AI Insights Panel",
+  subtitle = "Natural-language basketball reasoning",
+}: Pick<Snapshot, "insights"> & { title?: string; subtitle?: string }) {
   const severityStyle = {
     info: "border-electric/20 bg-electric/10 text-electric",
     warning: "border-warning/20 bg-warning/10 text-warning",
@@ -10,8 +14,8 @@ export function InsightPanel({ insights }: Pick<Snapshot, "insights">) {
   return (
     <section className="panel p-6">
       <div className="mb-4 flex items-center justify-between">
-        <h3 className="panel-title">AI Insights Panel</h3>
-        <span className="text-sm text-muted">Natural-language basketball reasoning</span>
+        <h3 className="panel-title">{title}</h3>
+        <span className="text-sm text-muted">{subtitle}</span>
       </div>
       <div className="space-y-4">
         {insights.map((insight) => (
@@ -29,4 +33,3 @@ export function InsightPanel({ insights }: Pick<Snapshot, "insights">) {
     </section>
   );
 }
-
