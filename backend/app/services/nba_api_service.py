@@ -207,6 +207,7 @@ def _build_team_state_from_season_stats(team_raw: dict, score: int, season_playe
             player_id=str(p.get("PLAYER_ID", "0")),
             player_name=str(p.get("PLAYER_NAME", "Unknown")),
             team_id=team_id,
+            rotation_role="starter" if len(players) < 5 else "bench",
             usage_rate=round(usage_rate, 3),
             points=0.0,
             assists=0.0,
@@ -324,8 +325,10 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
         try:
             box_data = await nba_live_client.fetch_boxscore(game_id)
             box = box_data.get("game", {})
-            home_box = box.get("homeTeam", {})
-            away_box = box.get("awayTeam", {})
+            home_box = box.get("homeTeam")
+            away_box = box.get("awayTeam")
+            if not home_box or not away_box:
+                raise ValueError("Boxscore returned no team data (game not yet started)")
             home_score = int(home_box.get("score") or home_score)
             away_score = int(away_box.get("score") or away_score)
             home_team = _build_team_state(home_box, home_score)

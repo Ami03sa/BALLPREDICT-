@@ -142,8 +142,21 @@ class LiveGameService:
 
     async def _resolve_context(self, game_id: str) -> tuple[GameContext, dict | None]:
         """Try live fetch first; fall back to startup context."""
+        from dataclasses import replace as dc_replace
         try:
             context, scoreboard_game, _, playbyplay = await self._build_live_context_bundle(game_id)
+            # If the live fetch produced no players (e.g. pre-game, boxscore unavailable),
+            # enrich with the startup context's season-average rosters.
+            startup = self._contexts.get(game_id)
+            if startup:
+                home_players = context.home_team.players or startup.home_team.players
+                away_players = context.away_team.players or startup.away_team.players
+                if home_players or away_players:
+                    context = dc_replace(
+                        context,
+                        home_team=dc_replace(context.home_team, players=home_players),
+                        away_team=dc_replace(context.away_team, players=away_players),
+                    )
             return context, scoreboard_game
         except StopIteration:
             pass
