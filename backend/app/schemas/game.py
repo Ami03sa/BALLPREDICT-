@@ -54,6 +54,7 @@ class TeamProjection(BaseModel):
     team_id: str
     team_name: str
     quarter: int
+    score: int = 0
     projected_score: tuple[int, int, int, int]
     final_score_mean: int
     final_score_ci: tuple[int, int]

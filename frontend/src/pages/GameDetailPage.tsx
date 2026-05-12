@@ -1,41 +1,244 @@
 import { useEffect, useState } from "react";
-import { InsightPanel } from "../components/InsightPanel";
-import { PlayerProjectionTable } from "../components/PlayerProjectionTable";
-import { PossessionFeed } from "../components/PossessionFeed";
-import { QuarterProjectionTable } from "../components/QuarterProjectionTable";
-import { Scoreboard } from "../components/Scoreboard";
-import { WinProbabilityChart } from "../components/WinProbabilityChart";
 import { fetchGamePreview, fetchSnapshot } from "../lib/api";
 import { mockPreview, mockSnapshot } from "../lib/mockData";
-import type { GamePreview, Snapshot } from "../types";
+import type { GamePreview, PlayerProjection, Snapshot } from "../types";
 
-function TeamPreviewCard({
-  team,
-}: {
-  team: GamePreview["homeTeam"] | GamePreview["awayTeam"];
-}) {
+// NBA team tricode → numeric team ID for logo CDN
+const NBA_TEAM_IDS: Record<string, string> = {
+  atl: "1610612737", bos: "1610612738", bkn: "1610612751", cha: "1610612766",
+  chi: "1610612741", cle: "1610612739", dal: "1610612742", den: "1610612743",
+  det: "1610612765", gsw: "1610612744", hou: "1610612745", ind: "1610612754",
+  lac: "1610612746", lal: "1610612747", mem: "1610612763", mia: "1610612748",
+  mil: "1610612749", min: "1610612750", nop: "1610612740", nyk: "1610612752",
+  okc: "1610612760", orl: "1610612753", phi: "1610612755", phx: "1610612756",
+  por: "1610612757", sac: "1610612758", sas: "1610612759", tor: "1610612761",
+  uta: "1610612762", was: "1610612764",
+};
+
+function teamLogoUrl(teamId: string): string {
+  const id = NBA_TEAM_IDS[teamId.toLowerCase()];
+  if (!id) return "";
+  return `https://cdn.nba.com/logos/nba/${id}/global/L/logo.svg`;
+}
+
+function playerHeadshotUrl(playerId: string): string {
+  // NBA CDN headshots use the numeric personId
+  return `https://cdn.nba.com/headshots/nba/latest/1040x760/${playerId}.png`;
+}
+
+function TeamLogo({ teamId, teamName, size = 80 }: { teamId: string; teamName: string; size?: number }) {
+  const [errored, setErrored] = useState(false);
+  const url = teamLogoUrl(teamId);
+  const abbr = teamId.toUpperCase().slice(0, 3);
+
+  if (!url || errored) {
+    return (
+      <div
+        style={{ width: size, height: size }}
+        className="flex items-center justify-center rounded-full bg-white/10 font-display text-xl font-bold text-white"
+      >
+        {abbr}
+      </div>
+    );
+  }
+
   return (
-    <div className="rounded-3xl border border-white/8 bg-panelAlt/80 p-5">
-      <p className="text-xs uppercase tracking-[0.3em] text-muted">{team.teamId}</p>
-      <h3 className="mt-2 font-display text-2xl text-white">{team.teamName}</h3>
-      <p className="mt-1 text-sm text-electric">{team.coachName}</p>
-      <div className="mt-4 grid grid-cols-2 gap-3">
-        <div className="rounded-2xl bg-black/20 p-3">
-          <p className="text-xs text-muted">OffRtg</p>
-          <p className="mt-1 text-xl font-semibold text-white">{team.offensiveRating}</p>
+    <img
+      src={url}
+      alt={teamName}
+      width={size}
+      height={size}
+      className="object-contain drop-shadow-lg"
+      onError={() => setErrored(true)}
+    />
+  );
+}
+
+function PlayerFace({
+  player,
+  onClick,
+}: {
+  player: PlayerProjection;
+  onClick: () => void;
+}) {
+  const [imgErrored, setImgErrored] = useState(false);
+  const isDnp = player.availabilityStatus === "dnp";
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={isDnp}
+      className={`group flex flex-col items-center gap-2 text-center transition
+        ${isDnp
+          ? "cursor-default opacity-40"
+          : "cursor-pointer active:scale-95"
+        }`}
+    >
+      <div className="relative overflow-hidden rounded-xl border-2 border-white/10 bg-white/5 transition group-hover:border-electric/60"
+           style={{ width: 110, height: 120 }}>
+        {!imgErrored ? (
+          <img
+            src={playerHeadshotUrl(player.playerId)}
+            alt={player.playerName}
+            className="h-full w-full object-cover object-top"
+            onError={() => setImgErrored(true)}
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-2xl font-bold text-white">
+            {player.playerName.split(" ").map((n) => n[0]).join("").slice(0, 2)}
+          </div>
+        )}
+        {player.rotationRole === "starter" && !isDnp && (
+          <span className="absolute bottom-1.5 left-1.5 rounded-md bg-electric px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-canvas">
+            Starter
+          </span>
+        )}
+      </div>
+      <div>
+        <p className="w-[110px] truncate text-xs font-medium leading-tight text-white">
+          {player.playerName.split(" ").slice(-1)[0]}
+        </p>
+        {isDnp && (
+          <p className="text-[9px] uppercase tracking-wider text-muted">DNP</p>
+        )}
+      </div>
+    </button>
+  );
+}
+
+function PlayerRoster({
+  teamName,
+  teamId,
+  players,
+  onOpenPlayer,
+}: {
+  teamName: string;
+  teamId: string;
+  players: PlayerProjection[];
+  onOpenPlayer: (id: string) => void;
+}) {
+  const sorted = [...players].sort((a, b) => {
+    if (a.availabilityStatus === "dnp" && b.availabilityStatus !== "dnp") return 1;
+    if (a.availabilityStatus !== "dnp" && b.availabilityStatus === "dnp") return -1;
+    if (a.rotationRole === "starter" && b.rotationRole !== "starter") return -1;
+    if (a.rotationRole !== "starter" && b.rotationRole === "starter") return 1;
+    return 0;
+  });
+
+  return (
+    <div className="panel p-5">
+      <div className="mb-4 flex items-center gap-3">
+        <TeamLogo teamId={teamId} teamName={teamName} size={32} />
+        <div>
+          <h3 className="font-display text-lg text-white">{teamName}</h3>
+          <p className="text-xs text-muted">Tap a player to see stats &amp; predictions</p>
         </div>
-        <div className="rounded-2xl bg-black/20 p-3">
-          <p className="text-xs text-muted">DefRtg</p>
-          <p className="mt-1 text-xl font-semibold text-white">{team.defensiveRating}</p>
+      </div>
+      <div className="flex flex-wrap gap-3">
+        {sorted.map((player) => (
+          <PlayerFace
+            key={player.playerId}
+            player={player}
+            onClick={() => {
+              if (player.availabilityStatus !== "dnp") onOpenPlayer(player.playerId);
+            }}
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function NBAScoreboard({
+  quarter,
+  clock,
+  status,
+  homeTeam,
+  awayTeam,
+  tipoff,
+  arena,
+  broadcast,
+}: {
+  quarter: number;
+  clock: string;
+  status: string;
+  homeTeam: Snapshot["homeTeam"] & { teamName: string; teamId: string };
+  awayTeam: Snapshot["awayTeam"] & { teamName: string; teamId: string };
+  tipoff: string;
+  arena: string;
+  broadcast: string;
+}) {
+  const isFinal = status === "final";
+  const isLive = status === "live";
+  const isScheduled = status === "scheduled" || (!isFinal && !isLive);
+
+  const phaseLabel = isFinal
+    ? "FINAL"
+    : isLive
+      ? `Q${quarter} ${clock}`
+      : tipoff;
+
+  return (
+    <div className="panel overflow-hidden">
+      {/* Status bar */}
+      <div className={`px-6 py-2 text-center text-xs font-semibold uppercase tracking-widest
+        ${isFinal ? "bg-white/8 text-muted" : isLive ? "bg-electric/20 text-electric" : "bg-accent/20 text-accent"}`}>
+        {phaseLabel}
+      </div>
+
+      {/* Main scoreboard */}
+      <div className="flex items-center justify-between gap-4 px-6 py-8 md:px-12">
+        {/* Away team */}
+        <div className="flex flex-1 flex-col items-center gap-3 text-center">
+          <TeamLogo teamId={awayTeam.teamId} teamName={awayTeam.teamName} size={80} />
+          <div>
+            <p className="font-display text-xl text-white">{awayTeam.teamName.split(" ").slice(-1)[0]}</p>
+            <p className="text-xs uppercase tracking-wider text-muted">{awayTeam.teamId.toUpperCase()}</p>
+          </div>
         </div>
-        <div className="rounded-2xl bg-black/20 p-3">
-          <p className="text-xs text-muted">Pace</p>
-          <p className="mt-1 text-xl font-semibold text-white">{team.pace}</p>
+
+        {/* Score */}
+        <div className="flex items-center gap-4 md:gap-8">
+          <span className={`font-display tabular-nums leading-none
+            ${isScheduled ? "text-4xl text-muted" : "text-6xl text-white md:text-7xl"}`}>
+            {isScheduled ? "--" : awayTeam.score}
+          </span>
+          <span className="text-2xl text-white/20">–</span>
+          <span className={`font-display tabular-nums leading-none
+            ${isScheduled ? "text-4xl text-muted" : "text-6xl text-white md:text-7xl"}`}>
+            {isScheduled ? "--" : homeTeam.score}
+          </span>
         </div>
-        <div className="rounded-2xl bg-black/20 p-3">
-          <p className="text-xs text-muted">Bench Depth</p>
-          <p className="mt-1 text-xl font-semibold text-white">{Math.round(team.benchDepth * 100)}%</p>
+
+        {/* Home team */}
+        <div className="flex flex-1 flex-col items-center gap-3 text-center">
+          <TeamLogo teamId={homeTeam.teamId} teamName={homeTeam.teamName} size={80} />
+          <div>
+            <p className="font-display text-xl text-white">{homeTeam.teamName.split(" ").slice(-1)[0]}</p>
+            <p className="text-xs uppercase tracking-wider text-muted">{homeTeam.teamId.toUpperCase()}</p>
+          </div>
         </div>
+      </div>
+
+      {/* Predicted score row */}
+      <div className="flex items-center justify-between border-t border-white/6 px-6 py-3 md:px-12">
+        <span className={`font-display text-2xl tabular-nums
+          ${awayTeam.finalScoreMean > 0 ? "text-electric" : "text-white/20"}`}>
+          {awayTeam.finalScoreMean > 0 ? awayTeam.finalScoreMean : "--"}
+        </span>
+        <span className="text-xs uppercase tracking-widest text-muted">Predicted</span>
+        <span className={`font-display text-2xl tabular-nums
+          ${homeTeam.finalScoreMean > 0 ? "text-electric" : "text-white/20"}`}>
+          {homeTeam.finalScoreMean > 0 ? homeTeam.finalScoreMean : "--"}
+        </span>
+      </div>
+
+      {/* Game info footer */}
+      <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 border-t border-white/6 px-6 py-3 text-xs text-muted">
+        {broadcast && broadcast !== "NBA TV" && <span>{broadcast}</span>}
+        {broadcast && <span>·</span>}
+        <span>{arena}</span>
       </div>
     </div>
   );
@@ -53,8 +256,6 @@ export function GameDetailPage({
   const [preview, setPreview] = useState<GamePreview>(mockPreview);
   const [snapshot, setSnapshot] = useState<Snapshot>(mockSnapshot);
   const [loading, setLoading] = useState(true);
-  const [refreshing, setRefreshing] = useState(false);
-  const [activeTeamId, setActiveTeamId] = useState<string>(mockSnapshot.awayTeam.teamId);
 
   useEffect(() => {
     let cancelled = false;
@@ -69,50 +270,31 @@ export function GameDetailPage({
         if (!cancelled) {
           setPreview(previewData);
           setSnapshot(snapshotData);
-          setActiveTeamId(snapshotData.awayTeam.teamId);
         }
       } catch {
         if (!cancelled) {
           setPreview(mockPreview);
           setSnapshot(mockSnapshot);
-          setActiveTeamId(mockSnapshot.awayTeam.teamId);
         }
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     }
 
     loadGame();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [gameId]);
 
-  async function rerunPrediction() {
-    setRefreshing(true);
-    try {
-      const snapshotData = await fetchSnapshot(gameId);
-      setSnapshot(snapshotData);
-    } catch {
-      setSnapshot(mockSnapshot);
-    } finally {
-      setRefreshing(false);
-    }
-  }
-
-  const activeTeamProjection =
-    activeTeamId === snapshot.homeTeam.teamId ? snapshot.homeTeam : snapshot.awayTeam;
-  const activePlayers = snapshot.playerProjections.filter((player) => player.teamId === activeTeamId);
+  const homePlayers = snapshot.playerProjections.filter((p) => p.teamId === snapshot.homeTeam.teamId);
+  const awayPlayers = snapshot.playerProjections.filter((p) => p.teamId === snapshot.awayTeam.teamId);
 
   if (loading) {
     return (
       <main className="min-h-screen bg-grid bg-[size:22px_22px] px-4 py-6 md:px-8">
-        <div className="mx-auto max-w-7xl">
-          <section className="panel p-6">
-            <p className="text-sm text-muted">Loading matchup page...</p>
-          </section>
+        <div className="mx-auto max-w-4xl">
+          <div className="panel p-8 text-center">
+            <p className="text-sm text-muted">Loading game...</p>
+          </div>
         </div>
       </main>
     );
@@ -120,121 +302,39 @@ export function GameDetailPage({
 
   return (
     <main className="min-h-screen bg-grid bg-[size:22px_22px] px-4 py-6 md:px-8">
-      <div className="mx-auto flex max-w-7xl flex-col gap-6">
-        <section className="panel p-6">
-          <div className="flex flex-wrap items-start justify-between gap-4">
-            <div>
-              <button
-                type="button"
-                onClick={onBack}
-                className="mb-4 rounded-full border border-white/10 px-4 py-2 text-sm text-ink transition hover:border-white/20 hover:bg-white/5"
-              >
-                Back to games
-              </button>
-              <p className="metric-chip mb-3">Matchup page</p>
-              <h1 className="font-display text-4xl text-white md:text-5xl">
-                {preview.awayTeam.teamName} at {preview.homeTeam.teamName}
-              </h1>
-              <p className="mt-3 max-w-3xl text-sm leading-6 text-muted">{preview.headline}</p>
-            </div>
-            <div className="rounded-3xl border border-white/10 bg-white/5 px-5 py-4 text-right">
-              <p className="text-xs uppercase tracking-[0.3em] text-muted">{preview.status}</p>
-              <p className="mt-1 text-lg text-white">{preview.tipoff}</p>
-              <p className="text-sm text-electric">{preview.broadcast}</p>
-              <p className="mt-1 text-sm text-muted">{preview.arena}</p>
-            </div>
-          </div>
-        </section>
+      <div className="mx-auto flex max-w-4xl flex-col gap-5">
+        <button
+          type="button"
+          onClick={onBack}
+          className="self-start rounded-full border border-white/10 px-4 py-2 text-sm text-ink transition hover:border-white/20 hover:bg-white/5"
+        >
+          ← Back to games
+        </button>
 
-        <div className="grid gap-6 lg:grid-cols-2">
-          <TeamPreviewCard team={preview.awayTeam} />
-          <TeamPreviewCard team={preview.homeTeam} />
-        </div>
-
-        <section className="panel p-6">
-          <div className="flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h2 className="panel-title">Prediction setup</h2>
-              <p className="mt-2 max-w-3xl text-sm leading-6 text-muted">{preview.predictionSummary}</p>
-            </div>
-            <button
-              type="button"
-              onClick={rerunPrediction}
-              disabled={refreshing}
-              className="rounded-full bg-accent px-5 py-3 font-semibold text-white transition hover:brightness-110 disabled:cursor-not-allowed disabled:opacity-70"
-            >
-              {refreshing ? "Refreshing..." : "Re-run prediction"}
-            </button>
-          </div>
-          <div className="mt-4 flex flex-wrap gap-2">
-            {preview.gameFactors.map((factor) => (
-              <span key={factor} className="rounded-full border border-white/8 px-3 py-1 text-xs text-ink">
-                {factor}
-              </span>
-            ))}
-          </div>
-        </section>
-
-        <Scoreboard
+        <NBAScoreboard
           quarter={snapshot.quarter}
           clock={snapshot.clock}
-          homeTeam={snapshot.homeTeam}
-          awayTeam={snapshot.awayTeam}
+          status={preview.status}
+          homeTeam={{ ...snapshot.homeTeam, teamName: preview.homeTeam.teamName, teamId: snapshot.homeTeam.teamId }}
+          awayTeam={{ ...snapshot.awayTeam, teamName: preview.awayTeam.teamName, teamId: snapshot.awayTeam.teamId }}
+          tipoff={preview.tipoff}
+          arena={preview.arena}
+          broadcast={preview.broadcast}
         />
 
-        <InsightPanel
-          insights={snapshot.insights}
-          title="AI Game Insights"
-          subtitle="How the model sees the matchup unfolding"
+        <PlayerRoster
+          teamName={preview.awayTeam.teamName}
+          teamId={snapshot.awayTeam.teamId}
+          players={awayPlayers}
+          onOpenPlayer={onOpenPlayer}
         />
 
-        <section className="space-y-4">
-          <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
-            <div>
-              <h2 className="panel-title">Team Player Predictions</h2>
-              <p className="mt-1 text-sm text-muted">
-                Switch between each team to view player totals that roll up into that team&apos;s projected output.
-              </p>
-            </div>
-            <div className="flex flex-wrap gap-2">
-              {[
-                { teamId: snapshot.awayTeam.teamId, teamName: snapshot.awayTeam.teamName },
-                { teamId: snapshot.homeTeam.teamId, teamName: snapshot.homeTeam.teamName },
-              ].map((team) => (
-                <button
-                  key={team.teamId}
-                  type="button"
-                  onClick={() => setActiveTeamId(team.teamId)}
-                  className={`rounded-full px-4 py-2 text-sm font-medium transition ${
-                    activeTeamId === team.teamId
-                      ? "bg-electric text-canvas"
-                      : "border border-white/10 bg-white/5 text-ink hover:border-white/20"
-                  }`}
-                >
-                  {team.teamName}
-                </button>
-              ))}
-            </div>
-          </div>
-
-          <PlayerProjectionTable
-            players={activePlayers}
-            teamName={activeTeamProjection.teamName}
-            teamId={activeTeamProjection.teamId}
-            projectedTeamScore={activeTeamProjection.finalScoreMean}
-            onOpenPlayer={onOpenPlayer}
-          />
-        </section>
-
-        <div className="grid gap-6 xl:grid-cols-[1.3fr_0.9fr]">
-          <div className="space-y-6">
-            <QuarterProjectionTable homeTeam={snapshot.homeTeam} awayTeam={snapshot.awayTeam} />
-            <WinProbabilityChart data={snapshot.winProbabilitySeries} />
-          </div>
-          <div className="space-y-6">
-            <PossessionFeed events={snapshot.possessionFeed} />
-          </div>
-        </div>
+        <PlayerRoster
+          teamName={preview.homeTeam.teamName}
+          teamId={snapshot.homeTeam.teamId}
+          players={homePlayers}
+          onOpenPlayer={onOpenPlayer}
+        />
       </div>
     </main>
   );

@@ -179,6 +179,7 @@ export async function fetchSnapshot(gameId: string): Promise<Snapshot> {
       homeTeam: {
         teamId: data.home_team.team_id,
         teamName: data.home_team.team_name,
+        score: data.home_team.score ?? 0,
         finalScoreMean: data.home_team.final_score_mean,
         finalScoreCI: data.home_team.final_score_ci,
         pace: data.home_team.pace,
@@ -190,6 +191,7 @@ export async function fetchSnapshot(gameId: string): Promise<Snapshot> {
       awayTeam: {
         teamId: data.away_team.team_id,
         teamName: data.away_team.team_name,
+        score: data.away_team.score ?? 0,
         finalScoreMean: data.away_team.final_score_mean,
         finalScoreCI: data.away_team.final_score_ci,
         pace: data.away_team.pace,

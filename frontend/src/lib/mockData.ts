@@ -109,6 +109,7 @@ export const mockSnapshot: Snapshot = {
   homeTeam: {
     teamId: "lal",
     teamName: "Los Angeles Lakers",
+    score: 0,
     finalScoreMean: 0,
     finalScoreCI: [0, 0],
     pace: 98.0,
@@ -120,6 +121,7 @@ export const mockSnapshot: Snapshot = {
   awayTeam: {
     teamId: "gsw",
     teamName: "Golden State Warriors",
+    score: 0,
     finalScoreMean: 0,
     finalScoreCI: [0, 0],
     pace: 98.0,

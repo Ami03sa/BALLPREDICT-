@@ -160,6 +160,7 @@ class PredictionEngine:
             team_id=team.team_id,
             team_name=team.team_name,
             quarter=context.quarter,
+            score=team.score,
             projected_score=quarter_projection,
             final_score_mean=final_mean,
             final_score_ci=ci,

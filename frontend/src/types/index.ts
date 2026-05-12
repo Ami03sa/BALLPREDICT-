@@ -1,6 +1,7 @@
 export type TeamProjection = {
   teamId: string;
   teamName: string;
+  score: number;
   finalScoreMean: number;
   finalScoreCI: [number, number];
   pace: number;
