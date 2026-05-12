@@ -133,7 +133,7 @@ class PredictionEngine:
             possession_factor = team.pace * 0.55 + pace_boost + random.uniform(-2.4, 2.4)
             shot_quality = team.offensive_rating - opponent.defensive_rating * 0.12
             turnover_penalty = team.turnover_rate * random.uniform(6, 12)
-            fatigue_penalty = mean([player.fatigue_index for player in team.players]) * 7.5
+            fatigue_penalty = (mean([p.fatigue_index for p in team.players]) if team.players else 0.2) * 7.5
             samples.append(int(team.score + possession_factor + shot_quality - turnover_penalty - fatigue_penalty))
         samples.sort()
         mean_score = round(mean(samples))
