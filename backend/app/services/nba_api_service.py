@@ -149,6 +149,32 @@ def _build_player_state(player_data: dict, team_id: str) -> PlayerGameState | No
     )
 
 
+def _build_minimal_team_state(team_raw: dict, score: int) -> TeamGameState:
+    """Build TeamGameState from scoreboard data only (no boxscore / no players)."""
+    tricode = team_raw.get("teamTricode", "UNK")
+    team_id = tricode.lower()
+    city = team_raw.get("teamCity", "")
+    name = team_raw.get("teamName", "")
+    team_name = TEAM_FULL_NAMES.get(tricode, f"{city} {name}".strip())
+    return TeamGameState(
+        team_id=team_id,
+        team_name=team_name,
+        coach_name="Head Coach",
+        score=score,
+        pace=98.0,
+        offensive_rating=114.0,
+        defensive_rating=114.0,
+        defensive_rebound_pct=0.73,
+        turnover_rate=0.13,
+        three_point_rate=0.42,
+        free_throw_rate=0.21,
+        foul_pressure=0.40,
+        bench_depth=0.50,
+        adjustment_discipline=0.65,
+        players=[],
+    )
+
+
 def _build_team_state(box_team: dict, score: int) -> TeamGameState:
     tricode = box_team.get("teamTricode", "UNK")
     team_id = tricode.lower()
@@ -229,27 +255,32 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
                 "away_record": f"{away_raw.get('wins', 0)}-{away_raw.get('losses', 0)}",
             }
 
-            # Boxscore has the full roster + live stats
-            try:
-                box_resp = await client.get(f"{_NBA_CDN}/boxscore/boxscore_{game_id}.json")
-                box_resp.raise_for_status()
-                box = box_resp.json()["game"]
-            except Exception:
-                continue
-
-            home_box = box.get("homeTeam", {})
-            away_box = box.get("awayTeam", {})
-            home_score = int(home_box.get("score") or 0)
-            away_score = int(away_box.get("score") or 0)
-
             period = game.get("period", 0) if game_status > 1 else 0
             clock = game.get("gameClock", "12:00") or "12:00"
             if game_status == 1:
                 period = 0
                 clock = "12:00"
 
-            home_team = _build_team_state(home_box, home_score)
-            away_team = _build_team_state(away_box, away_score)
+            # Try boxscore for full roster; fall back to scoreboard-only if 403/unavailable
+            try:
+                box_resp = await client.get(f"{_NBA_CDN}/boxscore/boxscore_{game_id}.json")
+                box_resp.raise_for_status()
+                box = box_resp.json()["game"]
+                home_box = box.get("homeTeam", {})
+                away_box = box.get("awayTeam", {})
+                home_score = int(home_box.get("score") or home_raw.get("score") or 0)
+                away_score = int(away_box.get("score") or away_raw.get("score") or 0)
+                home_team = _build_team_state(home_box, home_score)
+                away_team = _build_team_state(away_box, away_score)
+            except Exception as exc:
+                import logging as _log
+                _log.getLogger(__name__).warning(
+                    "Boxscore unavailable for %s (%s) — using scoreboard data only.", game_id, exc
+                )
+                home_score = int(home_raw.get("score") or 0)
+                away_score = int(away_raw.get("score") or 0)
+                home_team = _build_minimal_team_state(home_raw, home_score)
+                away_team = _build_minimal_team_state(away_raw, away_score)
 
             contexts[game_id] = GameContext(
                 game_id=game_id,

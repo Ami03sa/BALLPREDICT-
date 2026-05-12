@@ -11,7 +11,6 @@ import {
 import { useEffect, useState } from "react";
 import { InsightPanel } from "../components/InsightPanel";
 import { fetchPlayerDetail } from "../lib/api";
-import { mockPlayerDetail } from "../lib/mockData";
 import type { PlayerDetail } from "../types";
 
 function DetailStatCard({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
@@ -32,33 +31,27 @@ export function PlayerDetailPage({
   playerId: string;
   onBackToGame: () => void;
 }) {
-  const [detail, setDetail] = useState<PlayerDetail>(mockPlayerDetail);
+  const [detail, setDetail] = useState<PlayerDetail | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
     async function loadPlayer() {
       setLoading(true);
+      setError(null);
       try {
         const data = await fetchPlayerDetail(gameId, playerId);
-        if (!cancelled) {
-          setDetail(data);
-        }
-      } catch {
-        if (!cancelled) {
-          setDetail(mockPlayerDetail);
-        }
+        if (!cancelled) setDetail(data);
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load player");
       } finally {
-        if (!cancelled) {
-          setLoading(false);
-        }
+        if (!cancelled) setLoading(false);
       }
     }
 
     loadPlayer();
-    return () => {
-      cancelled = true;
-    };
+    return () => { cancelled = true; };
   }, [gameId, playerId]);
 
   if (loading) {
@@ -67,6 +60,26 @@ export function PlayerDetailPage({
         <div className="mx-auto max-w-7xl">
           <section className="panel p-6">
             <p className="text-sm text-muted">Loading player page...</p>
+          </section>
+        </div>
+      </main>
+    );
+  }
+
+  if (error || !detail) {
+    return (
+      <main className="min-h-screen bg-grid bg-[size:22px_22px] px-4 py-6 md:px-8">
+        <div className="mx-auto max-w-7xl flex flex-col gap-6">
+          <section className="panel p-6">
+            <button
+              type="button"
+              onClick={onBackToGame}
+              className="mb-4 rounded-full border border-white/10 px-4 py-2 text-sm text-ink transition hover:border-white/20 hover:bg-white/5"
+            >
+              Back to matchup
+            </button>
+            <p className="text-sm font-semibold text-red-400">Error loading player</p>
+            <p className="mt-2 text-sm text-muted">{error ?? "No data returned from API"}</p>
           </section>
         </div>
       </main>

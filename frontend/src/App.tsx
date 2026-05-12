@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { fetchSlate } from "./lib/api";
-import { mockSlate } from "./lib/mockData";
 import { GameDetailPage } from "./pages/GameDetailPage";
 import { PlayerDetailPage } from "./pages/PlayerDetailPage";
 import { SlatePage } from "./pages/SlatePage";
@@ -24,10 +23,13 @@ function getRouteFromLocation(pathname: string): Route {
 
 function App() {
   const [route, setRoute] = useState<Route>(() => getRouteFromLocation(window.location.pathname));
-  const [games, setGames] = useState<SlateGame[]>(mockSlate);
+  const [games, setGames] = useState<SlateGame[]>([]);
+  const [slateError, setSlateError] = useState<string | null>(null);
 
   useEffect(() => {
-    fetchSlate().then(setGames).catch(() => setGames(mockSlate));
+    fetchSlate()
+      .then((data) => { setGames(data); setSlateError(null); })
+      .catch((err: Error) => setSlateError(err.message));
   }, []);
 
   useEffect(() => {
@@ -68,7 +70,7 @@ function App() {
     );
   }
 
-  return <SlatePage games={games} onOpenGame={openGame} />;
+  return <SlatePage games={games} slateError={slateError} onOpenGame={openGame} />;
 }
 
 export default App;

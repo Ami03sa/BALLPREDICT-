@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { fetchGamePreview, fetchSnapshot } from "../lib/api";
-import { mockPreview, mockSnapshot } from "../lib/mockData";
 import type { GamePreview, PlayerProjection, Snapshot } from "../types";
 
 // NBA team tricode → numeric team ID for logo CDN
@@ -253,15 +252,17 @@ export function GameDetailPage({
   onBack: () => void;
   onOpenPlayer: (playerId: string) => void;
 }) {
-  const [preview, setPreview] = useState<GamePreview>(mockPreview);
-  const [snapshot, setSnapshot] = useState<Snapshot>(mockSnapshot);
+  const [preview, setPreview] = useState<GamePreview | null>(null);
+  const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
 
     async function loadGame() {
       setLoading(true);
+      setError(null);
       try {
         const [previewData, snapshotData] = await Promise.all([
           fetchGamePreview(gameId),
@@ -271,11 +272,8 @@ export function GameDetailPage({
           setPreview(previewData);
           setSnapshot(snapshotData);
         }
-      } catch {
-        if (!cancelled) {
-          setPreview(mockPreview);
-          setSnapshot(mockSnapshot);
-        }
+      } catch (err) {
+        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load game");
       } finally {
         if (!cancelled) setLoading(false);
       }
@@ -284,9 +282,6 @@ export function GameDetailPage({
     loadGame();
     return () => { cancelled = true; };
   }, [gameId]);
-
-  const homePlayers = snapshot.playerProjections.filter((p) => p.teamId === snapshot.homeTeam.teamId);
-  const awayPlayers = snapshot.playerProjections.filter((p) => p.teamId === snapshot.awayTeam.teamId);
 
   if (loading) {
     return (
@@ -299,6 +294,29 @@ export function GameDetailPage({
       </main>
     );
   }
+
+  if (error || !preview || !snapshot) {
+    return (
+      <main className="min-h-screen bg-grid bg-[size:22px_22px] px-4 py-6 md:px-8">
+        <div className="mx-auto max-w-4xl flex flex-col gap-5">
+          <button
+            type="button"
+            onClick={onBack}
+            className="self-start rounded-full border border-white/10 px-4 py-2 text-sm text-ink transition hover:border-white/20 hover:bg-white/5"
+          >
+            ← Back to games
+          </button>
+          <div className="panel p-8">
+            <p className="text-sm font-semibold text-red-400">Error loading game</p>
+            <p className="mt-2 text-sm text-muted">{error ?? "No data returned from API"}</p>
+          </div>
+        </div>
+      </main>
+    );
+  }
+
+  const homePlayers = snapshot.playerProjections.filter((p) => p.teamId === snapshot.homeTeam.teamId);
+  const awayPlayers = snapshot.playerProjections.filter((p) => p.teamId === snapshot.awayTeam.teamId);
 
   return (
     <main className="min-h-screen bg-grid bg-[size:22px_22px] px-4 py-6 md:px-8">

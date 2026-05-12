@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 
 import httpx
+from fastapi import HTTPException
 
 from app.schemas.game import (
     ConfidenceBand,
@@ -126,46 +127,59 @@ class LiveGameService:
         try:
             context, scoreboard_game, _, _ = await self._build_live_context_bundle(game_id)
             return self._build_preview_payload(context, self._build_live_slate_row(scoreboard_game))
-        except (httpx.HTTPError, KeyError, ValueError, StopIteration):
-            context = self._contexts[game_id]
-            slate = self._slate[game_id]
-            return self._build_preview_payload(context, slate)
+        except StopIteration:
+            raise HTTPException(status_code=404, detail=f"Game {game_id} not found in today's schedule")
+        except httpx.HTTPError as exc:
+            logger.error("NBA CDN error for game %s preview: %s", game_id, exc)
+            raise HTTPException(status_code=502, detail="NBA data temporarily unavailable")
 
     async def get_game_snapshot(self, game_id: str) -> GameSnapshot:
         try:
             context, scoreboard_game, _, playbyplay = await self._build_live_context_bundle(game_id)
-            snapshot = projection_service.build_snapshot(
-                context,
-                status=self._status_label(scoreboard_game.get("gameStatus")),
-                possession_feed=self._build_live_possession_feed(playbyplay),
-            )
-        except (httpx.HTTPError, KeyError, ValueError, StopIteration):
-            context = self._contexts[game_id]
-            snapshot = projection_service.build_snapshot(context, status="demo")
+        except StopIteration:
+            raise HTTPException(status_code=404, detail=f"Game {game_id} not found in today's schedule")
+        except httpx.HTTPError as exc:
+            logger.error("NBA CDN error for game %s snapshot: %s", game_id, exc)
+            raise HTTPException(status_code=502, detail="NBA data temporarily unavailable")
+        snapshot = projection_service.build_snapshot(
+            context,
+            status=self._status_label(scoreboard_game.get("gameStatus")),
+            possession_feed=self._build_live_possession_feed(playbyplay),
+        )
         return _zero_snapshot(snapshot)
 
     async def get_player_detail(self, game_id: str, player_id: str) -> PlayerDetailResponse:
         try:
             context, scoreboard_game, _, playbyplay = await self._build_live_context_bundle(game_id)
-            snapshot = projection_service.build_snapshot(
-                context,
-                status=self._status_label(scoreboard_game.get("gameStatus")),
-                possession_feed=self._build_live_possession_feed(playbyplay),
-            )
-        except (httpx.HTTPError, KeyError, ValueError, StopIteration):
-            context = self._contexts[game_id]
-            snapshot = projection_service.build_snapshot(context, status="demo")
+        except StopIteration:
+            raise HTTPException(status_code=404, detail=f"Game {game_id} not found in today's schedule")
+        except httpx.HTTPError as exc:
+            logger.error("NBA CDN error for game %s player %s: %s", game_id, player_id, exc)
+            raise HTTPException(status_code=502, detail="NBA data temporarily unavailable")
+        snapshot = projection_service.build_snapshot(
+            context,
+            status=self._status_label(scoreboard_game.get("gameStatus")),
+            possession_feed=self._build_live_possession_feed(playbyplay),
+        )
         return self._build_player_detail_payload(game_id, player_id, context, _zero_snapshot(snapshot))
 
     async def _build_live_context_bundle(self, game_id: str) -> tuple[GameContext, dict[str, Any], dict[str, Any], dict[str, Any]]:
         scoreboard = await nba_live_client.fetch_scoreboard()
         games = scoreboard.get("scoreboard", {}).get("games", [])
         scoreboard_game = next(game for game in games if str(game.get("gameId")) == str(game_id))
-        boxscore = await nba_live_client.fetch_boxscore(str(game_id))
+
+        boxscore: dict[str, Any] = {}
+        try:
+            boxscore = await nba_live_client.fetch_boxscore(str(game_id))
+        except httpx.HTTPError as exc:
+            logger.warning("Boxscore unavailable for %s (%s) — using scoreboard data only.", game_id, exc)
+
+        playbyplay: dict[str, Any] = {}
         try:
             playbyplay = await nba_live_client.fetch_playbyplay(str(game_id))
         except httpx.HTTPError:
-            playbyplay = {}
+            pass
+
         context = self._build_live_context(scoreboard_game, boxscore)
         return context, scoreboard_game, boxscore, playbyplay
 

@@ -63,9 +63,11 @@ function SlateCard({
 
 export function SlatePage({
   games,
+  slateError,
   onOpenGame,
 }: {
   games: SlateGame[];
+  slateError?: string | null;
   onOpenGame: (gameId: string) => void;
 }) {
   return (
@@ -88,10 +90,19 @@ export function SlatePage({
           </div>
         </section>
 
+        {slateError && (
+          <section className="rounded-2xl border border-red-500/20 bg-red-500/10 px-5 py-4 text-sm text-red-400">
+            Failed to load games: {slateError}
+          </section>
+        )}
+
         <section className="grid gap-4 xl:grid-cols-3">
           {games.map((game) => (
             <SlateCard key={game.gameId} game={game} onOpen={onOpenGame} />
           ))}
+          {!slateError && games.length === 0 && (
+            <p className="col-span-3 py-12 text-center text-muted">No games scheduled today.</p>
+          )}
         </section>
       </div>
     </main>
