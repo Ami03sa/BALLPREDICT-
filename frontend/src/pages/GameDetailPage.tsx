@@ -155,6 +155,8 @@ function NBAScoreboard({
   status,
   homeTeam,
   awayTeam,
+  homePredicted,
+  awayPredicted,
   tipoff,
   arena,
   broadcast,
@@ -164,6 +166,8 @@ function NBAScoreboard({
   status: string;
   homeTeam: Snapshot["homeTeam"] & { teamName: string; teamId: string };
   awayTeam: Snapshot["awayTeam"] & { teamName: string; teamId: string };
+  homePredicted: number;
+  awayPredicted: number;
   tipoff: string;
   arena: string;
   broadcast: string;
@@ -178,6 +182,24 @@ function NBAScoreboard({
       ? `Q${quarter} ${clock}`
       : `Tipoff ${tipoff}`;
 
+  function TeamBlock({ team, predicted }: { team: typeof homeTeam; predicted: number }) {
+    return (
+      <div className="flex flex-1 flex-col items-center gap-2 text-center">
+        <TeamLogo teamId={team.teamId} teamName={team.teamName} size={80} />
+        <div>
+          <p className="font-display text-xl text-white">{team.teamName.split(" ").slice(-1)[0]}</p>
+          <p className="text-xs uppercase tracking-wider text-muted">{team.teamId.toUpperCase()}</p>
+        </div>
+        <div className="flex flex-col items-center gap-0.5">
+          <span className="font-display text-3xl tabular-nums leading-none text-electric">
+            {predicted}
+          </span>
+          <span className="text-[9px] uppercase tracking-widest text-muted">Predicted</span>
+        </div>
+      </div>
+    );
+  }
+
   return (
     <div className="panel overflow-hidden">
       {/* Status bar */}
@@ -188,16 +210,9 @@ function NBAScoreboard({
 
       {/* Main scoreboard */}
       <div className="flex items-center justify-between gap-4 px-6 py-8 md:px-12">
-        {/* Away team */}
-        <div className="flex flex-1 flex-col items-center gap-3 text-center">
-          <TeamLogo teamId={awayTeam.teamId} teamName={awayTeam.teamName} size={80} />
-          <div>
-            <p className="font-display text-xl text-white">{awayTeam.teamName.split(" ").slice(-1)[0]}</p>
-            <p className="text-xs uppercase tracking-wider text-muted">{awayTeam.teamId.toUpperCase()}</p>
-          </div>
-        </div>
+        <TeamBlock team={awayTeam} predicted={awayPredicted} />
 
-        {/* Score */}
+        {/* Live / final score */}
         <div className="flex items-center gap-4 md:gap-8">
           {isScheduled ? (
             <span className="font-display text-sm uppercase tracking-widest text-muted">Not Started</span>
@@ -214,27 +229,7 @@ function NBAScoreboard({
           )}
         </div>
 
-        {/* Home team */}
-        <div className="flex flex-1 flex-col items-center gap-3 text-center">
-          <TeamLogo teamId={homeTeam.teamId} teamName={homeTeam.teamName} size={80} />
-          <div>
-            <p className="font-display text-xl text-white">{homeTeam.teamName.split(" ").slice(-1)[0]}</p>
-            <p className="text-xs uppercase tracking-wider text-muted">{homeTeam.teamId.toUpperCase()}</p>
-          </div>
-        </div>
-      </div>
-
-      {/* Predicted score row */}
-      <div className="flex items-center justify-between border-t border-white/6 px-6 py-3 md:px-12">
-        <span className={`font-display text-2xl tabular-nums ${awayTeam.finalScoreMean > 0 ? "text-electric" : "text-white/20"}`}>
-          {awayTeam.finalScoreMean > 0 ? awayTeam.finalScoreMean : "—"}
-        </span>
-        <span className="text-xs uppercase tracking-widest text-muted">
-          {isScheduled ? "BallPredict projection" : "Predicted final"}
-        </span>
-        <span className={`font-display text-2xl tabular-nums ${homeTeam.finalScoreMean > 0 ? "text-electric" : "text-white/20"}`}>
-          {homeTeam.finalScoreMean > 0 ? homeTeam.finalScoreMean : "—"}
-        </span>
+        <TeamBlock team={homeTeam} predicted={homePredicted} />
       </div>
 
       {/* Game info footer */}
@@ -322,6 +317,9 @@ export function GameDetailPage({
   const homePlayers = snapshot.playerProjections.filter((p) => p.teamId === snapshot.homeTeam.teamId);
   const awayPlayers = snapshot.playerProjections.filter((p) => p.teamId === snapshot.awayTeam.teamId);
 
+  const sum = (players: typeof homePlayers) =>
+    Math.round(players.reduce((acc, p) => acc + (p.projectedStats?.mean?.points ?? 0), 0));
+
   return (
     <main className="min-h-screen bg-grid bg-[size:22px_22px] px-4 py-6 md:px-8">
       <div className="mx-auto flex max-w-4xl flex-col gap-5">
@@ -339,6 +337,8 @@ export function GameDetailPage({
           status={preview.status}
           homeTeam={{ ...snapshot.homeTeam, teamName: preview.homeTeam.teamName, teamId: snapshot.homeTeam.teamId }}
           awayTeam={{ ...snapshot.awayTeam, teamName: preview.awayTeam.teamName, teamId: snapshot.awayTeam.teamId }}
+          homePredicted={sum(homePlayers)}
+          awayPredicted={sum(awayPlayers)}
           tipoff={preview.tipoff}
           arena={preview.arena}
           broadcast={preview.broadcast}
