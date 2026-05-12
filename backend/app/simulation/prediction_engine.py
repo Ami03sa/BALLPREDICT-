@@ -41,6 +41,24 @@ class PredictionEngine:
         defense: TeamGameState,
         player: PlayerGameState,
     ) -> PlayerProjection:
+        if player.availability_status == "dnp":
+            zero_line = StatLine()
+            return PlayerProjection(
+                player_id=player.player_id,
+                player_name=player.player_name,
+                team_id=player.team_id,
+                quarter=context.quarter,
+                rotation_role=player.rotation_role,
+                availability_status=player.availability_status,
+                dnp_reason=player.dnp_reason,
+                live_stats=zero_line,
+                projected_stats=ConfidenceBand(low=zero_line, mean=zero_line, high=zero_line),
+                momentum_score=player.momentum_score,
+                fatigue_index=player.fatigue_index,
+                defensive_pressure=0.0,
+                adjustments=[],
+            )
+
         adjustments = coaching_engine.build_player_counters(context, offense, defense, player)
         impact_maps = [adjustment.impact for adjustment in adjustments]
         state = self._apply_adjustments(player, impact_maps)
@@ -87,6 +105,9 @@ class PredictionEngine:
             player_name=player.player_name,
             team_id=player.team_id,
             quarter=context.quarter,
+            rotation_role=player.rotation_role,
+            availability_status=player.availability_status,
+            dnp_reason=player.dnp_reason,
             live_stats=StatLine(
                 points=player.points,
                 assists=player.assists,
@@ -122,8 +143,12 @@ class PredictionEngine:
         runs = 400
         pace_boost = (context.live_pace_multiplier - 1) * 4
         final_mean, ci, projected_pace = self._simulate_team_score(team, opponent, pace_boost, runs)
-        quarter_seed = team.score / max(context.quarter, 1)
-        quarter_projection = tuple(max(18, round(quarter_seed + delta)) for delta in (0, 2, -1, 1))
+        if context.quarter <= 0:
+            base_quarter = final_mean / 4
+            quarter_projection = tuple(max(22, round(base_quarter + delta)) for delta in (-1, 1, -2, 2))
+        else:
+            quarter_seed = team.score / max(context.quarter, 1)
+            quarter_projection = tuple(max(18, round(quarter_seed + delta)) for delta in (0, 2, -1, 1))
         margin = final_mean - context.home_team.score if is_home else final_mean - context.away_team.score
         home_baseline = context.home_team.offensive_rating - context.away_team.defensive_rating * 0.08 + context.home_advantage
         away_baseline = context.away_team.offensive_rating - context.home_team.defensive_rating * 0.08
@@ -146,4 +171,3 @@ class PredictionEngine:
 
 
 prediction_engine = PredictionEngine()
-

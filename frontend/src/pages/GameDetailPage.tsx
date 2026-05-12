@@ -54,6 +54,7 @@ export function GameDetailPage({
   const [snapshot, setSnapshot] = useState<Snapshot>(mockSnapshot);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
+  const [activeTeamId, setActiveTeamId] = useState<string>(mockSnapshot.awayTeam.teamId);
 
   useEffect(() => {
     let cancelled = false;
@@ -68,11 +69,13 @@ export function GameDetailPage({
         if (!cancelled) {
           setPreview(previewData);
           setSnapshot(snapshotData);
+          setActiveTeamId(snapshotData.awayTeam.teamId);
         }
       } catch {
         if (!cancelled) {
           setPreview(mockPreview);
           setSnapshot(mockSnapshot);
+          setActiveTeamId(mockSnapshot.awayTeam.teamId);
         }
       } finally {
         if (!cancelled) {
@@ -98,6 +101,10 @@ export function GameDetailPage({
       setRefreshing(false);
     }
   }
+
+  const activeTeamProjection =
+    activeTeamId === snapshot.homeTeam.teamId ? snapshot.homeTeam : snapshot.awayTeam;
+  const activePlayers = snapshot.playerProjections.filter((player) => player.teamId === activeTeamId);
 
   if (loading) {
     return (
@@ -181,7 +188,43 @@ export function GameDetailPage({
           subtitle="How the model sees the matchup unfolding"
         />
 
-        <PlayerProjectionTable players={snapshot.playerProjections} onOpenPlayer={onOpenPlayer} />
+        <section className="space-y-4">
+          <div className="mb-4 flex flex-wrap items-center justify-between gap-4">
+            <div>
+              <h2 className="panel-title">Team Player Predictions</h2>
+              <p className="mt-1 text-sm text-muted">
+                Switch between each team to view player totals that roll up into that team&apos;s projected output.
+              </p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              {[
+                { teamId: snapshot.awayTeam.teamId, teamName: snapshot.awayTeam.teamName },
+                { teamId: snapshot.homeTeam.teamId, teamName: snapshot.homeTeam.teamName },
+              ].map((team) => (
+                <button
+                  key={team.teamId}
+                  type="button"
+                  onClick={() => setActiveTeamId(team.teamId)}
+                  className={`rounded-full px-4 py-2 text-sm font-medium transition ${
+                    activeTeamId === team.teamId
+                      ? "bg-electric text-canvas"
+                      : "border border-white/10 bg-white/5 text-ink hover:border-white/20"
+                  }`}
+                >
+                  {team.teamName}
+                </button>
+              ))}
+            </div>
+          </div>
+
+          <PlayerProjectionTable
+            players={activePlayers}
+            teamName={activeTeamProjection.teamName}
+            teamId={activeTeamProjection.teamId}
+            projectedTeamScore={activeTeamProjection.finalScoreMean}
+            onOpenPlayer={onOpenPlayer}
+          />
+        </section>
 
         <div className="grid gap-6 xl:grid-cols-[1.3fr_0.9fr]">
           <div className="space-y-6">

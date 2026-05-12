@@ -7,6 +7,9 @@ class PlayerGameState:
     player_name: str
     team_id: str
     usage_rate: float
+    rotation_role: str = "rotation"
+    availability_status: str = "available"
+    dnp_reason: str | None = None
     points: float = 0
     assists: float = 0
     rebounds: float = 0
@@ -62,4 +65,3 @@ class GameContext:
     live_pace_multiplier: float
     injury_risk_flags: list[str] = field(default_factory=list)
     back_to_back: bool = False
-

@@ -23,6 +23,9 @@ export type PlayerProjection = {
   playerId: string;
   playerName: string;
   teamId: string;
+  rotationRole: string;
+  availabilityStatus: string;
+  dnpReason?: string | null;
   momentumScore: number;
   fatigueIndex: number;
   defensivePressure: number;

@@ -4,10 +4,17 @@ from app.simulation.state import GameContext
 
 class InsightService:
     def build_game_insights(self, context: GameContext) -> list[InsightCard]:
-        star = max(
-            context.home_team.players + context.away_team.players,
-            key=lambda player: player.points + player.momentum_score * 10,
-        )
+        all_players = context.home_team.players + context.away_team.players
+        if not all_players:
+            return [
+                InsightCard(
+                    title="Live Context Pending",
+                    body="BallPredict is waiting for enough live possessions and player usage data to form stronger tactical reads.",
+                    severity="info",
+                )
+            ]
+
+        star = max(all_players, key=lambda player: player.points + player.momentum_score * 10)
         return [
             InsightCard(
                 title="Primary Defensive Shift",
@@ -36,4 +43,3 @@ class InsightService:
 
 
 insight_service = InsightService()
-

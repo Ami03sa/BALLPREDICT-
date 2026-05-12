@@ -39,6 +39,9 @@ class PlayerProjection(BaseModel):
     player_name: str
     team_id: str
     quarter: int
+    rotation_role: str = "rotation"
+    availability_status: str = "available"
+    dnp_reason: str | None = None
     live_stats: StatLine
     projected_stats: ConfidenceBand
     momentum_score: float
