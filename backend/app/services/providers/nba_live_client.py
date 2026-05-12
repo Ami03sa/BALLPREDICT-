@@ -8,8 +8,15 @@ from app.core.config import settings
 class NbaLiveClient:
     def __init__(self) -> None:
         self._headers = {
-            "User-Agent": "BallPredict/0.1 (+https://github.com/Ami03sa/BALLPREDICT-)",
-            "Accept": "application/json,text/plain,*/*",
+            "User-Agent": (
+                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/122.0.0.0 Safari/537.36"
+            ),
+            "Accept": "application/json, text/plain, */*",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Referer": "https://www.nba.com/",
+            "Origin": "https://www.nba.com",
         }
 
     async def _get_json(self, path: str) -> dict:
