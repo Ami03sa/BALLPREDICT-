@@ -160,7 +160,6 @@ def _build_team_state(box_team: dict, score: int) -> TeamGameState:
             players.append(state)
 
     players.sort(key=lambda p: p.minutes_played, reverse=True)
-    players = players[:8]
 
     return TeamGameState(
         team_id=team_id,

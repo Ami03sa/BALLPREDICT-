@@ -84,9 +84,9 @@ class NbaLiveClient:
         rs = next((r for r in data.get("resultSets", []) if r["name"] == "LeagueDashPlayerStats"), {})
         headers = rs.get("headers", [])
         players = [dict(zip(headers, row)) for row in rs.get("rowSet", [])]
-        players = [p for p in players if float(p.get("MIN") or 0) >= 5]
+        players = [p for p in players if float(p.get("GP") or 0) >= 1]
         players.sort(key=lambda p: float(p.get("MIN") or 0), reverse=True)
-        return players[:10]
+        return players
 
     def _current_season(self) -> str:
         from datetime import date
