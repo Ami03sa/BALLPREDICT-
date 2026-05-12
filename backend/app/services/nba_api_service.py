@@ -3,6 +3,7 @@ Fetches live game data via nba_live_client (stats.nba.com + NBA CDN).
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime, timedelta
 
@@ -180,6 +181,69 @@ def _build_team_state(box_team: dict, score: int) -> TeamGameState:
     )
 
 
+def _build_team_state_from_season_stats(team_raw: dict, score: int, season_players: list[dict]) -> TeamGameState:
+    """Build TeamGameState using per-game season averages as prediction baseline (pre-game)."""
+    tricode = team_raw.get("teamTricode", "UNK")
+    team_id = tricode.lower()
+    city = team_raw.get("teamCity", "")
+    name = team_raw.get("teamName", "")
+    team_name = TEAM_FULL_NAMES.get(tricode, f"{city} {name}".strip())
+
+    players: list[PlayerGameState] = []
+    for p in season_players:
+        fg_pct = float(p.get("FG_PCT") or 0.45)
+        three_pct = float(p.get("FG3_PCT") or 0.35)
+        if fg_pct > 1:
+            fg_pct /= 100
+        if three_pct > 1:
+            three_pct /= 100
+        min_avg = float(p.get("MIN") or 0)
+        fga_avg = float(p.get("FGA") or 0)
+        fta_avg = float(p.get("FTA") or 0)
+        tov_avg = float(p.get("TOV") or 0)
+        possessions_used = fga_avg + 0.44 * fta_avg + tov_avg
+        usage_rate = min(0.42, max(0.08, possessions_used / max(1.0, min_avg * 0.4)))
+        players.append(PlayerGameState(
+            player_id=str(p.get("PLAYER_ID", "0")),
+            player_name=str(p.get("PLAYER_NAME", "Unknown")),
+            team_id=team_id,
+            usage_rate=round(usage_rate, 3),
+            points=0.0,
+            assists=0.0,
+            rebounds=0.0,
+            steals=0.0,
+            blocks=0.0,
+            turnovers=0.0,
+            threes_made=0.0,
+            field_goal_pct=fg_pct,
+            three_point_pct=three_pct,
+            minutes_played=min_avg,
+            fatigue_index=0.10,
+            momentum_score=0.55,
+            matchup_difficulty=0.45,
+            drive_frequency=0.18,
+            paint_touches=4,
+        ))
+
+    return TeamGameState(
+        team_id=team_id,
+        team_name=team_name,
+        coach_name="Head Coach",
+        score=score,
+        pace=98.0,
+        offensive_rating=114.0,
+        defensive_rating=113.0,
+        defensive_rebound_pct=0.73,
+        turnover_rate=0.13,
+        three_point_rate=0.42,
+        free_throw_rate=0.21,
+        foul_pressure=0.40,
+        bench_depth=0.55,
+        adjustment_discipline=0.65,
+        players=players,
+    )
+
+
 def _build_minimal_team_state(team_raw: dict, score: int) -> TeamGameState:
     """Build TeamGameState from scoreboard data only (no player-level stats)."""
     tricode = team_raw.get("teamTricode", "UNK")
@@ -255,22 +319,34 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
             period = 0
             clock = "12:00"
 
+        home_score = int(home_raw.get("score") or 0)
+        away_score = int(away_raw.get("score") or 0)
         try:
             box_data = await nba_live_client.fetch_boxscore(game_id)
             box = box_data.get("game", {})
             home_box = box.get("homeTeam", {})
             away_box = box.get("awayTeam", {})
-            home_score = int(home_box.get("score") or home_raw.get("score") or 0)
-            away_score = int(away_box.get("score") or away_raw.get("score") or 0)
+            home_score = int(home_box.get("score") or home_score)
+            away_score = int(away_box.get("score") or away_score)
             home_team = _build_team_state(home_box, home_score)
             away_team = _build_team_state(away_box, away_score)
-            logger.info("Loaded boxscore for %s (%s players)", game_id, len(home_team.players) + len(away_team.players))
+            logger.info("Boxscore loaded for %s — %d players", game_id, len(home_team.players) + len(away_team.players))
         except Exception as exc:
-            logger.warning("Boxscore unavailable for %s (%s) — scoreboard only.", game_id, exc)
-            home_score = int(home_raw.get("score") or 0)
-            away_score = int(away_raw.get("score") or 0)
-            home_team = _build_minimal_team_state(home_raw, home_score)
-            away_team = _build_minimal_team_state(away_raw, away_score)
+            logger.warning("Boxscore unavailable for %s (%s) — fetching season averages.", game_id, exc)
+            try:
+                home_team_id = int(home_raw.get("teamId") or 0)
+                away_team_id = int(away_raw.get("teamId") or 0)
+                home_stats, away_stats = await asyncio.gather(
+                    nba_live_client.fetch_player_season_stats(home_team_id),
+                    nba_live_client.fetch_player_season_stats(away_team_id),
+                )
+                home_team = _build_team_state_from_season_stats(home_raw, home_score, home_stats)
+                away_team = _build_team_state_from_season_stats(away_raw, away_score, away_stats)
+                logger.info("Season stats loaded for %s — %d players", game_id, len(home_team.players) + len(away_team.players))
+            except Exception as exc2:
+                logger.warning("Season stats also unavailable for %s (%s) — no players.", game_id, exc2)
+                home_team = _build_minimal_team_state(home_raw, home_score)
+                away_team = _build_minimal_team_state(away_raw, away_score)
 
         contexts[game_id] = GameContext(
             game_id=game_id,

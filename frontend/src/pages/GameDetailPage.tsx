@@ -170,13 +170,13 @@ function NBAScoreboard({
 }) {
   const isFinal = status === "final";
   const isLive = status === "live";
-  const isScheduled = status === "scheduled" || (!isFinal && !isLive);
+  const isScheduled = !isFinal && !isLive;
 
   const phaseLabel = isFinal
     ? "FINAL"
     : isLive
       ? `Q${quarter} ${clock}`
-      : tipoff;
+      : `Tipoff ${tipoff}`;
 
   return (
     <div className="panel overflow-hidden">
@@ -199,15 +199,19 @@ function NBAScoreboard({
 
         {/* Score */}
         <div className="flex items-center gap-4 md:gap-8">
-          <span className={`font-display tabular-nums leading-none
-            ${isScheduled ? "text-4xl text-muted" : "text-6xl text-white md:text-7xl"}`}>
-            {isScheduled ? "--" : awayTeam.score}
-          </span>
-          <span className="text-2xl text-white/20">–</span>
-          <span className={`font-display tabular-nums leading-none
-            ${isScheduled ? "text-4xl text-muted" : "text-6xl text-white md:text-7xl"}`}>
-            {isScheduled ? "--" : homeTeam.score}
-          </span>
+          {isScheduled ? (
+            <span className="font-display text-sm uppercase tracking-widest text-muted">Not Started</span>
+          ) : (
+            <>
+              <span className="font-display text-6xl tabular-nums leading-none text-white md:text-7xl">
+                {awayTeam.score}
+              </span>
+              <span className="text-2xl text-white/20">–</span>
+              <span className="font-display text-6xl tabular-nums leading-none text-white md:text-7xl">
+                {homeTeam.score}
+              </span>
+            </>
+          )}
         </div>
 
         {/* Home team */}
@@ -222,14 +226,14 @@ function NBAScoreboard({
 
       {/* Predicted score row */}
       <div className="flex items-center justify-between border-t border-white/6 px-6 py-3 md:px-12">
-        <span className={`font-display text-2xl tabular-nums
-          ${awayTeam.finalScoreMean > 0 ? "text-electric" : "text-white/20"}`}>
-          {awayTeam.finalScoreMean > 0 ? awayTeam.finalScoreMean : "--"}
+        <span className={`font-display text-2xl tabular-nums ${awayTeam.finalScoreMean > 0 ? "text-electric" : "text-white/20"}`}>
+          {awayTeam.finalScoreMean > 0 ? awayTeam.finalScoreMean : "—"}
         </span>
-        <span className="text-xs uppercase tracking-widest text-muted">Predicted</span>
-        <span className={`font-display text-2xl tabular-nums
-          ${homeTeam.finalScoreMean > 0 ? "text-electric" : "text-white/20"}`}>
-          {homeTeam.finalScoreMean > 0 ? homeTeam.finalScoreMean : "--"}
+        <span className="text-xs uppercase tracking-widest text-muted">
+          {isScheduled ? "BallPredict projection" : "Predicted final"}
+        </span>
+        <span className={`font-display text-2xl tabular-nums ${homeTeam.finalScoreMean > 0 ? "text-electric" : "text-white/20"}`}>
+          {homeTeam.finalScoreMean > 0 ? homeTeam.finalScoreMean : "—"}
         </span>
       </div>
 

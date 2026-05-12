@@ -124,44 +124,35 @@ class LiveGameService:
             return games
 
     async def get_game_preview(self, game_id: str) -> dict:
-        try:
-            context, scoreboard_game, _, _ = await self._build_live_context_bundle(game_id)
-            return self._build_preview_payload(context, self._build_live_slate_row(scoreboard_game))
-        except StopIteration:
-            raise HTTPException(status_code=404, detail=f"Game {game_id} not found in today's schedule")
-        except httpx.HTTPError as exc:
-            logger.error("NBA CDN error for game %s preview: %s", game_id, exc)
-            raise HTTPException(status_code=502, detail="NBA data temporarily unavailable")
+        context, scoreboard_game = await self._resolve_context(game_id)
+        slate_row = self._build_live_slate_row(scoreboard_game) if scoreboard_game else self._slate.get(game_id, {"game_id": game_id, "status": "scheduled", "tipoff": "TBD", "broadcast": "", "arena": "", "headline": "", "home_team": "", "away_team": "", "home_abbreviation": "", "away_abbreviation": "", "home_record": "", "away_record": "", "prediction_hook": ""})
+        return self._build_preview_payload(context, slate_row)
 
     async def get_game_snapshot(self, game_id: str) -> GameSnapshot:
-        try:
-            context, scoreboard_game, _, playbyplay = await self._build_live_context_bundle(game_id)
-        except StopIteration:
-            raise HTTPException(status_code=404, detail=f"Game {game_id} not found in today's schedule")
-        except httpx.HTTPError as exc:
-            logger.error("NBA CDN error for game %s snapshot: %s", game_id, exc)
-            raise HTTPException(status_code=502, detail="NBA data temporarily unavailable")
-        snapshot = projection_service.build_snapshot(
-            context,
-            status=self._status_label(scoreboard_game.get("gameStatus")),
-            possession_feed=self._build_live_possession_feed(playbyplay),
-        )
-        return _zero_snapshot(snapshot)
+        context, scoreboard_game = await self._resolve_context(game_id)
+        status = self._status_label(scoreboard_game.get("gameStatus")) if scoreboard_game else "scheduled"
+        snapshot = projection_service.build_snapshot(context, status=status, possession_feed=[])
+        return snapshot
 
     async def get_player_detail(self, game_id: str, player_id: str) -> PlayerDetailResponse:
+        context, scoreboard_game = await self._resolve_context(game_id)
+        status = self._status_label(scoreboard_game.get("gameStatus")) if scoreboard_game else "scheduled"
+        snapshot = projection_service.build_snapshot(context, status=status, possession_feed=[])
+        return self._build_player_detail_payload(game_id, player_id, context, snapshot)
+
+    async def _resolve_context(self, game_id: str) -> tuple[GameContext, dict | None]:
+        """Try live fetch first; fall back to startup context."""
         try:
             context, scoreboard_game, _, playbyplay = await self._build_live_context_bundle(game_id)
+            return context, scoreboard_game
         except StopIteration:
-            raise HTTPException(status_code=404, detail=f"Game {game_id} not found in today's schedule")
-        except httpx.HTTPError as exc:
-            logger.error("NBA CDN error for game %s player %s: %s", game_id, player_id, exc)
-            raise HTTPException(status_code=502, detail="NBA data temporarily unavailable")
-        snapshot = projection_service.build_snapshot(
-            context,
-            status=self._status_label(scoreboard_game.get("gameStatus")),
-            possession_feed=self._build_live_possession_feed(playbyplay),
-        )
-        return self._build_player_detail_payload(game_id, player_id, context, _zero_snapshot(snapshot))
+            pass
+        except Exception as exc:
+            logger.warning("Live fetch failed for %s (%s) — using startup context.", game_id, exc)
+        context = self._contexts.get(game_id)
+        if context is None:
+            raise HTTPException(status_code=404, detail=f"Game {game_id} not available")
+        return context, None
 
     async def _build_live_context_bundle(self, game_id: str) -> tuple[GameContext, dict[str, Any], dict[str, Any], dict[str, Any]]:
         scoreboard = await nba_live_client.fetch_scoreboard()
@@ -171,7 +162,7 @@ class LiveGameService:
         boxscore: dict[str, Any] = {}
         try:
             boxscore = await nba_live_client.fetch_boxscore(str(game_id))
-        except httpx.HTTPError as exc:
+        except Exception as exc:
             logger.warning("Boxscore unavailable for %s (%s) — using scoreboard data only.", game_id, exc)
 
         playbyplay: dict[str, Any] = {}
@@ -404,6 +395,7 @@ class LiveGameService:
         ]
 
         live = projection.live_stats
+        proj = projection.projected_stats.mean
         return PlayerDetailResponse(
             game_id=game_id,
             player_id=projection.player_id,
@@ -418,23 +410,23 @@ class LiveGameService:
             projection=projection,
             quarter_breakdown=quarter_breakdown,
             stat_profile=[
-                {"label": "Points", "live": live.points, "projected": 0},
-                {"label": "Assists", "live": live.assists, "projected": 0},
-                {"label": "Rebounds", "live": live.rebounds, "projected": 0},
-                {"label": "3PM", "live": live.threes_made, "projected": 0},
-                {"label": "Turnovers", "live": live.turnovers, "projected": 0},
+                {"label": "Points", "live": live.points, "projected": round(proj.points, 1)},
+                {"label": "Assists", "live": live.assists, "projected": round(proj.assists, 1)},
+                {"label": "Rebounds", "live": live.rebounds, "projected": round(proj.rebounds, 1)},
+                {"label": "3PM", "live": live.threes_made, "projected": round(proj.threes_made, 1)},
+                {"label": "Turnovers", "live": live.turnovers, "projected": round(proj.turnovers, 1)},
             ],
             matchup_factors=[
-                f"Usage load at {(projection.projected_stats.mean.usage_rate * 100):.0f}%",
-                f"{opponent.team_name} defensive rating {opponent.defensive_rating}",
-                f"{team.team_name} pace baseline {team.pace}",
+                f"Usage load at {(proj.usage_rate * 100):.0f}%",
+                f"{opponent.team_name} defensive rating {opponent.defensive_rating:.0f}",
+                f"{team.team_name} pace baseline {team.pace:.0f}",
                 "weak-side help timing",
                 "rotation staggering leverage",
             ],
             confidence={
-                "floor_points": 0,
-                "median_points": 0,
-                "ceiling_points": 0,
+                "floor_points": round(projection.projected_stats.low.points, 1),
+                "median_points": round(proj.points, 1),
+                "ceiling_points": round(projection.projected_stats.high.points, 1),
                 "pressure": projection.defensive_pressure,
             },
             player_insights=[

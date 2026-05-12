@@ -64,6 +64,35 @@ class NbaLiveClient:
     async def fetch_playbyplay(self, game_id: str) -> dict:
         return await self._cdn_get(f"playbyplay/playbyplay_{game_id}.json")
 
+    async def fetch_player_season_stats(self, team_id: int) -> list[dict]:
+        """Per-game season averages for players on a team (used for pre-game predictions)."""
+        data = await self._stats_get("leaguedashplayerstats", {
+            "TeamID": team_id,
+            "PerMode": "PerGame",
+            "Season": self._current_season(),
+            "SeasonType": "Regular Season",
+            "MeasureType": "Base",
+            "LeagueID": "00",
+            "DateFrom": "", "DateTo": "", "GameScope": "", "GameSegment": "",
+            "ISTRound": "", "LastNGames": 0, "Location": "", "Month": 0,
+            "OpponentTeamID": 0, "Outcome": "", "PORound": 0,
+            "PaceAdjust": "N", "Period": 0, "PlayerExperience": "",
+            "PlayerPosition": "", "PlusMinus": "N", "Rank": "N",
+            "SeasonSegment": "", "ShotClockRange": "", "StarterBench": "",
+            "TwoWay": 0, "VsConference": "", "VsDivision": "",
+        })
+        rs = next((r for r in data.get("resultSets", []) if r["name"] == "LeagueDashPlayerStats"), {})
+        headers = rs.get("headers", [])
+        players = [dict(zip(headers, row)) for row in rs.get("rowSet", [])]
+        players = [p for p in players if float(p.get("MIN") or 0) >= 5]
+        players.sort(key=lambda p: float(p.get("MIN") or 0), reverse=True)
+        return players[:10]
+
+    def _current_season(self) -> str:
+        from datetime import date
+        d = date.today()
+        return f"{d.year}-{str(d.year + 1)[2:]}" if d.month >= 10 else f"{d.year - 1}-{str(d.year)[2:]}"
+
     def _parse_stats_boxscore(self, data: dict) -> dict:
         """Convert stats.nba.com resultSets format → CDN-compatible dict."""
         rs_map = {rs["name"]: rs for rs in data.get("resultSets", [])}
