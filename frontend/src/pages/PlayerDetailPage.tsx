@@ -2,6 +2,7 @@ import {
   Bar,
   BarChart,
   CartesianGrid,
+  LabelList,
   Legend,
   ResponsiveContainer,
   Tooltip,
@@ -190,27 +191,37 @@ export function PlayerDetailPage({
         <section className="panel p-6">
           <div className="mb-4 flex items-center justify-between">
             <h2 className="panel-title">Live vs Final Projection</h2>
-            <span className="text-sm text-muted">Current line versus end-of-game output</span>
+            <span className="text-sm text-muted">Current stats versus end-of-game projection</span>
           </div>
-          <div className="h-80">
-            <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={detail.statProfile}>
-                <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
-                <XAxis dataKey="label" stroke="#89a3ba" />
-                <YAxis stroke="#89a3ba" />
-                <Tooltip
-                  contentStyle={{
-                    background: "#0d1c2b",
-                    borderRadius: 16,
-                    border: "1px solid rgba(255,255,255,0.08)",
-                  }}
-                />
-                <Legend />
-                <Bar dataKey="live" fill="#64748b" radius={[8, 8, 0, 0]} />
-                <Bar dataKey="projected" fill="#6ee7ff" radius={[8, 8, 0, 0]} />
-              </BarChart>
-            </ResponsiveContainer>
-          </div>
+          {detail.statProfile.every((s) => s.live === 0) ? (
+            <div className="flex h-40 items-center justify-center rounded-2xl border border-white/6 bg-white/3">
+              <p className="text-sm text-muted">Live stats will appear once the game starts</p>
+            </div>
+          ) : (
+            <div className="h-80">
+              <ResponsiveContainer width="100%" height="100%">
+                <BarChart data={detail.statProfile} margin={{ top: 20, right: 10, left: -10, bottom: 0 }}>
+                  <CartesianGrid stroke="rgba(255,255,255,0.08)" vertical={false} />
+                  <XAxis dataKey="label" stroke="#89a3ba" tick={{ fontSize: 12 }} />
+                  <YAxis stroke="#89a3ba" tick={{ fontSize: 12 }} />
+                  <Tooltip
+                    contentStyle={{
+                      background: "#0d1c2b",
+                      borderRadius: 16,
+                      border: "1px solid rgba(255,255,255,0.08)",
+                    }}
+                  />
+                  <Legend />
+                  <Bar dataKey="live" name="Live" fill="#64748b" radius={[6, 6, 0, 0]}>
+                    <LabelList dataKey="live" position="top" style={{ fill: "#89a3ba", fontSize: 11 }} />
+                  </Bar>
+                  <Bar dataKey="projected" name="Projected" fill="#6ee7ff" radius={[6, 6, 0, 0]}>
+                    <LabelList dataKey="projected" position="top" style={{ fill: "#6ee7ff", fontSize: 11 }} />
+                  </Bar>
+                </BarChart>
+              </ResponsiveContainer>
+            </div>
+          )}
         </section>
       </div>
     </main>

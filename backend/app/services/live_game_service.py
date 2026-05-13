@@ -149,8 +149,22 @@ class LiveGameService:
             # enrich with the startup context's season-average rosters.
             startup = self._contexts.get(game_id)
             if startup:
-                home_players = context.home_team.players or startup.home_team.players
-                away_players = context.away_team.players or startup.away_team.players
+                # Only fall back to startup (season-avg) players when the live context
+                # has no players at all — i.e. boxscore unavailable (pre-game).
+                # If the live context has players with real stats, keep them as-is.
+                def _has_live_stats(players) -> bool:
+                    return any(p.points > 0 or p.assists > 0 or p.rebounds > 0 for p in players)
+
+                home_players = (
+                    context.home_team.players
+                    if context.home_team.players and _has_live_stats(context.home_team.players)
+                    else (context.home_team.players or startup.home_team.players)
+                )
+                away_players = (
+                    context.away_team.players
+                    if context.away_team.players and _has_live_stats(context.away_team.players)
+                    else (context.away_team.players or startup.away_team.players)
+                )
                 if home_players or away_players:
                     context = dc_replace(
                         context,
