@@ -121,6 +121,8 @@ export function PlayerDetailPage({
           <DetailStatCard label="Projected Assists" value={detail.projection.projectedStats.mean.assists.toFixed(1)} />
           <DetailStatCard label="Projected Rebounds" value={detail.projection.projectedStats.mean.rebounds.toFixed(1)} />
           <DetailStatCard label="Projected 3PM" value={detail.projection.projectedStats.mean.threesMade.toFixed(1)} />
+          <DetailStatCard label="Projected Steals" value={detail.projection.projectedStats.mean.steals.toFixed(1)} />
+          <DetailStatCard label="Projected Blocks" value={detail.projection.projectedStats.mean.blocks.toFixed(1)} />
         </section>
 
         <section className="panel p-6">

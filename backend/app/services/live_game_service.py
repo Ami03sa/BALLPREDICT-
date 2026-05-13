@@ -440,6 +440,8 @@ class LiveGameService:
                 {"label": "Points", "live": live.points, "projected": round(proj.points, 1)},
                 {"label": "Assists", "live": live.assists, "projected": round(proj.assists, 1)},
                 {"label": "Rebounds", "live": live.rebounds, "projected": round(proj.rebounds, 1)},
+                {"label": "Steals", "live": live.steals, "projected": round(proj.steals, 1)},
+                {"label": "Blocks", "live": live.blocks, "projected": round(proj.blocks, 1)},
                 {"label": "3PM", "live": live.threes_made, "projected": round(proj.threes_made, 1)},
                 {"label": "Turnovers", "live": live.turnovers, "projected": round(proj.turnovers, 1)},
             ],

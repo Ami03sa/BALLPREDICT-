@@ -42,6 +42,8 @@ export type PlayerProjection = {
       points: number;
       assists: number;
       rebounds: number;
+      steals: number;
+      blocks: number;
       threesMade: number;
       turnovers: number;
       usageRate: number;
