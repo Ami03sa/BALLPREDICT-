@@ -47,7 +47,19 @@ class NbaLiveClient:
         return await self._cdn_get("scoreboard/todaysScoreboard_00.json")
 
     async def fetch_boxscore(self, game_id: str) -> dict:
-        """Fetch from stats.nba.com — returns CDN-compatible {game:{homeTeam,awayTeam}} dict."""
+        """
+        Try CDN live boxscore first (works for in-progress games).
+        Fall back to stats.nba.com (works for completed games).
+        Returns CDN-compatible {game:{homeTeam,awayTeam}} dict.
+        """
+        try:
+            data = await self._cdn_get(f"boxscore/boxscore_{game_id}.json")
+            game = data.get("game", {})
+            if game.get("homeTeam") and game.get("awayTeam"):
+                return data
+        except Exception:
+            pass
+
         data = await self._stats_get(
             "boxscoretraditionalv2",
             {
