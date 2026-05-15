@@ -132,13 +132,13 @@ class LiveGameService:
         context, scoreboard_game = await self._resolve_context(game_id)
         status = self._status_label(scoreboard_game.get("gameStatus")) if scoreboard_game else "scheduled"
         snapshot = projection_service.build_snapshot(context, status=status, possession_feed=[])
-        return _zero_snapshot(snapshot)
+        return snapshot
 
     async def get_player_detail(self, game_id: str, player_id: str) -> PlayerDetailResponse:
         context, scoreboard_game = await self._resolve_context(game_id)
         status = self._status_label(scoreboard_game.get("gameStatus")) if scoreboard_game else "scheduled"
         snapshot = projection_service.build_snapshot(context, status=status, possession_feed=[])
-        return self._build_player_detail_payload(game_id, player_id, context, _zero_snapshot(snapshot))
+        return self._build_player_detail_payload(game_id, player_id, context, snapshot)
 
     async def _resolve_context(self, game_id: str) -> tuple[GameContext, dict | None]:
         """Try live fetch first; fall back to startup context."""
