@@ -281,35 +281,39 @@ class PredictionEngine:
             adjustments=adjustments,
         )
 
-    def _simulate_team_score(self, team: TeamGameState, opponent: TeamGameState, pace_boost: float, runs: int) -> tuple[int, tuple[int, int], float]:
-        import random
-        samples: list[int] = []
-        for _ in range(runs):
-            possession_factor = team.pace * 0.55 + pace_boost + random.uniform(-2.4, 2.4)
-            shot_quality      = team.offensive_rating - opponent.defensive_rating * 0.12
-            turnover_penalty  = team.turnover_rate * random.uniform(6, 12)
-            fatigue_penalty   = (mean([p.fatigue_index for p in team.players]) if team.players else 0.2) * 7.5
-            samples.append(int(team.score + possession_factor + shot_quality - turnover_penalty - fatigue_penalty))
-        samples.sort()
-        mean_score = round(mean(samples))
-        return mean_score, (samples[int(runs * 0.1)], samples[int(runs * 0.9)]), team.pace + pace_boost
-
-    def project_team(self, context: GameContext, team: TeamGameState, opponent: TeamGameState, is_home: bool) -> TeamProjection:
-        runs = 400
-        pace_boost = (context.live_pace_multiplier - 1) * 4
-        final_mean, ci, projected_pace = self._simulate_team_score(team, opponent, pace_boost, runs)
+    def project_team(
+        self,
+        context: GameContext,
+        team: TeamGameState,
+        opponent: TeamGameState,
+        is_home: bool,
+        player_score_sum: int = 0,
+    ) -> TeamProjection:
+        """
+        Build team projection.  final_score_mean = sum of player XGBoost point
+        projections (passed in from projection_service after players are projected).
+        Win probability is derived from score margin + ratings edge.
+        """
+        final_mean = player_score_sum if player_score_sum > 0 else team.score
+        spread     = max(4, int(final_mean * 0.11))
+        ci         = (max(0, final_mean - spread), final_mean + spread)
 
         if context.quarter <= 0:
-            base_quarter = final_mean / 4
-            quarter_projection = tuple(max(22, round(base_quarter + d)) for d in (-1, 1, -2, 2))
+            base_q = final_mean / 4
+            quarter_projection = tuple(max(20, round(base_q + d)) for d in (-1, 1, -2, 2))
         else:
-            quarter_seed = team.score / max(context.quarter, 1)
-            quarter_projection = tuple(max(18, round(quarter_seed + d)) for d in (0, 2, -1, 1))
+            q_seed = team.score / max(context.quarter, 1)
+            quarter_projection = tuple(max(16, round(q_seed + d)) for d in (0, 2, -1, 1))
 
-        margin     = final_mean - context.home_team.score if is_home else final_mean - context.away_team.score
-        home_edge  = (context.home_team.offensive_rating - context.away_team.defensive_rating * 0.08 + context.home_advantage) \
-                   - (context.away_team.offensive_rating - context.home_team.defensive_rating * 0.08)
-        win_prob   = 1 / (1 + math.exp(-(home_edge + context.score_margin * 0.22)))
+        home_edge = (
+            context.home_team.offensive_rating
+            - context.away_team.defensive_rating * 0.08
+            + context.home_advantage
+        ) - (
+            context.away_team.offensive_rating
+            - context.home_team.defensive_rating * 0.08
+        )
+        win_prob      = 1 / (1 + math.exp(-(home_edge + context.score_margin * 0.22)))
         team_win_prob = win_prob if is_home else 1 - win_prob
 
         return TeamProjection(
@@ -320,9 +324,9 @@ class PredictionEngine:
             projected_score=quarter_projection,
             final_score_mean=final_mean,
             final_score_ci=ci,
-            pace=round(projected_pace, 1),
-            offensive_rating=round(team.offensive_rating + margin * 0.4, 1),
-            defensive_rating=round(opponent.defensive_rating - margin * 0.25, 1),
+            pace=round(team.pace + (context.live_pace_multiplier - 1) * 4, 1),
+            offensive_rating=round(team.offensive_rating, 1),
+            defensive_rating=round(opponent.defensive_rating, 1),
             win_probability=round(team_win_prob, 3),
         )
 

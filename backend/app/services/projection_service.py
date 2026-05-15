@@ -5,70 +5,6 @@ from app.simulation.state import GameContext
 
 
 class ProjectionService:
-    def _reconcile_player_points_to_team_total(self, players: list, target_points: int) -> list:
-        if not players:
-            return players
-
-        raw_total = sum(player.projected_stats.mean.points for player in players)
-        if raw_total <= 0:
-            even_share = round(target_points / len(players), 1)
-            return [
-                player.model_copy(
-                    update={
-                        "projected_stats": player.projected_stats.model_copy(
-                            update={
-                                "mean": player.projected_stats.mean.model_copy(update={"points": even_share}),
-                            }
-                        )
-                    }
-                )
-                for player in players
-            ]
-
-        scale = target_points / raw_total
-        reconciled = []
-        for player in players:
-            low = player.projected_stats.low.points
-            mean = player.projected_stats.mean.points
-            high = player.projected_stats.high.points
-            reconciled.append(
-                player.model_copy(
-                    update={
-                        "projected_stats": player.projected_stats.model_copy(
-                            update={
-                                "low": player.projected_stats.low.model_copy(
-                                    update={"points": round(max(0, low * scale), 1)}
-                                ),
-                                "mean": player.projected_stats.mean.model_copy(
-                                    update={"points": round(max(0, mean * scale), 1)}
-                                ),
-                                "high": player.projected_stats.high.model_copy(
-                                    update={"points": round(max(0, high * scale), 1)}
-                                ),
-                            }
-                        )
-                    }
-                )
-            )
-
-        adjusted_total = round(sum(player.projected_stats.mean.points for player in reconciled), 1)
-        delta = round(target_points - adjusted_total, 1)
-        if reconciled and abs(delta) >= 0.1:
-            lead_index = max(range(len(reconciled)), key=lambda idx: reconciled[idx].projected_stats.mean.points)
-            lead = reconciled[lead_index]
-            reconciled[lead_index] = lead.model_copy(
-                update={
-                    "projected_stats": lead.projected_stats.model_copy(
-                        update={
-                            "mean": lead.projected_stats.mean.model_copy(
-                                update={"points": round(max(0, lead.projected_stats.mean.points + delta), 1)}
-                            )
-                        }
-                    )
-                }
-            )
-        return reconciled
-
     def build_snapshot(
         self,
         context: GameContext,
@@ -76,9 +12,8 @@ class ProjectionService:
         status: str = "live",
         possession_feed: list[dict] | None = None,
     ) -> GameSnapshot:
-        home_projection = prediction_engine.project_team(context, context.home_team, context.away_team, True)
-        away_projection = prediction_engine.project_team(context, context.away_team, context.home_team, False)
-
+        # Project players first so we can sum their XGBoost point projections
+        # and use that sum as the authoritative team final-score prediction.
         home_player_projections = [
             prediction_engine.project_player(context, context.home_team, context.away_team, player)
             for player in context.home_team.players
@@ -87,14 +22,23 @@ class ProjectionService:
             prediction_engine.project_player(context, context.away_team, context.home_team, player)
             for player in context.away_team.players
         ]
-        home_player_projections = self._reconcile_player_points_to_team_total(
-            home_player_projections,
-            home_projection.final_score_mean,
+
+        # Only the top 9 contributors by projected points (realistic playoff/game lineup).
+        # Summing all 20 roster players inflates the total far beyond real game scores.
+        def _team_pts_sum(projections: list) -> int:
+            top9 = sorted(projections, key=lambda p: p.projected_stats.mean.points, reverse=True)[:9]
+            return round(sum(p.projected_stats.mean.points for p in top9))
+
+        home_pts_sum = _team_pts_sum(home_player_projections)
+        away_pts_sum = _team_pts_sum(away_player_projections)
+
+        home_projection = prediction_engine.project_team(
+            context, context.home_team, context.away_team, True, player_score_sum=home_pts_sum
         )
-        away_player_projections = self._reconcile_player_points_to_team_total(
-            away_player_projections,
-            away_projection.final_score_mean,
+        away_projection = prediction_engine.project_team(
+            context, context.away_team, context.home_team, False, player_score_sum=away_pts_sum
         )
+
         player_projections = home_player_projections + away_player_projections
 
         win_series = [
