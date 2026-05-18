@@ -414,15 +414,74 @@ class LiveGameService:
             team = context.away_team
             opponent = context.home_team
 
-        quarter_breakdown = [
-            PlayerQuarterProjection(quarter="Q1", points=0, assists=0, rebounds=0, threes_made=0),
-            PlayerQuarterProjection(quarter="Q2", points=0, assists=0, rebounds=0, threes_made=0),
-            PlayerQuarterProjection(quarter="Q3", points=0, assists=0, rebounds=0, threes_made=0),
-            PlayerQuarterProjection(quarter="Q4", points=0, assists=0, rebounds=0, threes_made=0),
-        ]
-
         live = projection.live_stats
         proj = projection.projected_stats.mean
+
+        q = context.quarter
+        remaining_q = max(0, 4 - q)
+
+        # Quarter weights reflect real NBA game flow:
+        # Q1 — player is open, no film adjustments deployed yet → highest share
+        # Q2 — opposing coach starts blitzing / switching based on Q1 tendencies
+        # Q3 — halftime scouting report lands, full adjustment package active
+        # Q4 — fatigue + complete defensive scheme → lowest natural share
+        # Each coaching adjustment suppresses Q2-Q4 progressively more.
+        #
+        # Hot factor (last-3 vs last-10 ratio) models takeover potential:
+        # A hot player's weight shifts toward later quarters — they keep attacking,
+        # force the defense to respond, and can take over any quarter unpredictably.
+        # A cold player front-loads their contribution (defense already figured them out).
+        n_adj    = len(projection.adjustments)
+        pressure = projection.defensive_pressure   # 0.0 – 1.0
+        hot      = projection.hot_factor           # 0.70 – 1.45
+
+        # Base suppression from coaching adjustments
+        base = [
+            0.28,
+            max(0.18, 0.26 - n_adj * 0.015),
+            max(0.15, 0.25 - n_adj * 0.035),
+            max(0.12, 0.21 - n_adj * 0.05 - pressure * 0.04),
+        ]
+
+        # Hot players shift weight toward Q3/Q4 (takeover / late-game dominance).
+        # Cold players lose weight in Q3/Q4 (defense has them figured out).
+        takeover_shift = (hot - 1.0) * 0.06   # +0.027 per quarter for hot=1.45, negative if cold
+        raw_w = [
+            base[0] - takeover_shift * 1.5,   # Q1: slightly less if hot (saves energy)
+            base[1] - takeover_shift * 0.5,   # Q2: mild shift
+            base[2] + takeover_shift * 0.8,   # Q3: hot players elevate here
+            base[3] + takeover_shift * 1.2,   # Q4: biggest takeover boost for hot players
+        ]
+        raw_w = [max(0.08, w) for w in raw_w]
+        total_w = sum(raw_w)
+        weights = [w / total_w for w in raw_w]  # normalise so Q1+Q2+Q3+Q4 == full prediction
+
+        def _split(actual: float, projected: float) -> list[float]:
+            if q == 0:
+                # Pre-game: distribute full projection by quarter weights
+                return [round(projected * w, 1) for w in weights]
+            # Live: past quarters from actual stats (averaged), future from remaining projected
+            past_per_q = round(actual / q, 1) if q > 0 else 0.0
+            remaining = max(0.0, projected - actual)
+            future_raw = weights[q:4]
+            future_total = sum(future_raw) or 1.0
+            future = [round(remaining * (w / future_total), 1) for w in future_raw]
+            result = [past_per_q] * min(q, 4) + future
+            while len(result) < 4:
+                result.append(0.0)
+            return result[:4]
+
+        pts_q  = _split(live.points,      proj.points)
+        ast_q  = _split(live.assists,     proj.assists)
+        reb_q  = _split(live.rebounds,    proj.rebounds)
+        fg3_q  = _split(live.threes_made, proj.threes_made)
+
+        quarter_breakdown = [
+            PlayerQuarterProjection(quarter="Q1", points=pts_q[0], assists=ast_q[0], rebounds=reb_q[0], threes_made=fg3_q[0]),
+            PlayerQuarterProjection(quarter="Q2", points=pts_q[1], assists=ast_q[1], rebounds=reb_q[1], threes_made=fg3_q[1]),
+            PlayerQuarterProjection(quarter="Q3", points=pts_q[2], assists=ast_q[2], rebounds=reb_q[2], threes_made=fg3_q[2]),
+            PlayerQuarterProjection(quarter="Q4", points=pts_q[3], assists=ast_q[3], rebounds=reb_q[3], threes_made=fg3_q[3]),
+        ]
         return PlayerDetailResponse(
             game_id=game_id,
             player_id=projection.player_id,

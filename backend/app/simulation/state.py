@@ -27,6 +27,14 @@ class PlayerGameState:
     touch_time: float = 6.2
     drive_frequency: float = 0.18
     paint_touches: float = 4
+    # Season averages — used by fallback model when XGBoost is unavailable
+    pts_avg: float = 0.0
+    ast_avg: float = 0.0
+    reb_avg: float = 0.0
+    stl_avg: float = 0.0
+    blk_avg: float = 0.0
+    tov_avg: float = 0.0
+    fg3m_avg: float = 0.0
 
 
 @dataclass(slots=True)

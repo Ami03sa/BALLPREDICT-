@@ -77,7 +77,12 @@ class NbaLiveClient:
         return await self._cdn_get(f"playbyplay/playbyplay_{game_id}.json")
 
     async def fetch_player_season_stats(self, team_id: int) -> list[dict]:
-        """Per-game season averages for players on a team (used for pre-game predictions)."""
+        """Per-game averages for active players on a team over the last 20 games.
+
+        Using LastNGames=20 ensures we only get players currently on the roster —
+        players traded away won't have played 20 games for this team, so they
+        either won't appear or will have very low GP and get filtered out.
+        """
         data = await self._stats_get("leaguedashplayerstats", {
             "TeamID": team_id,
             "PerMode": "PerGame",
@@ -86,7 +91,7 @@ class NbaLiveClient:
             "MeasureType": "Base",
             "LeagueID": "00",
             "DateFrom": "", "DateTo": "", "GameScope": "", "GameSegment": "",
-            "ISTRound": "", "LastNGames": 0, "Location": "", "Month": 0,
+            "ISTRound": "", "LastNGames": 20, "Location": "", "Month": 0,
             "OpponentTeamID": 0, "Outcome": "", "PORound": 0,
             "PaceAdjust": "N", "Period": 0, "PlayerExperience": "",
             "PlayerPosition": "", "PlusMinus": "N", "Rank": "N",
@@ -96,7 +101,8 @@ class NbaLiveClient:
         rs = next((r for r in data.get("resultSets", []) if r["name"] == "LeagueDashPlayerStats"), {})
         headers = rs.get("headers", [])
         players = [dict(zip(headers, row)) for row in rs.get("rowSet", [])]
-        players = [p for p in players if float(p.get("GP") or 0) >= 1]
+        # Must have played at least 3 of the last 20 games for this team
+        players = [p for p in players if float(p.get("GP") or 0) >= 3]
         players.sort(key=lambda p: float(p.get("MIN") or 0), reverse=True)
         return players
 

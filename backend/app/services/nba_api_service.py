@@ -5,9 +5,31 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import sqlite3
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from app.simulation.state import GameContext, PlayerGameState, TeamGameState
+
+_DB_PATH = Path(__file__).parent.parent.parent / "data" / "nba_training.db"
+
+
+def _recent_dnp(player_id: str) -> bool:
+    """True if the player's last 5 logged games all have 0 minutes (DNP streak)."""
+    if not _DB_PATH.exists():
+        return False
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        rows = conn.execute(
+            "SELECT min FROM player_game_logs WHERE player_id = ? ORDER BY game_date DESC LIMIT 5",
+            (player_id,),
+        ).fetchall()
+        conn.close()
+        if not rows:
+            return False
+        return all(float(r[0] or 0) == 0.0 for r in rows)
+    except Exception:
+        return False
 
 logger = logging.getLogger(__name__)
 
@@ -190,23 +212,38 @@ def _build_team_state_from_season_stats(team_raw: dict, score: int, season_playe
 
     players: list[PlayerGameState] = []
     for p in season_players:
+        min_avg = float(p.get("MIN") or 0)
+        # Skip players who barely play — they are DNP candidates and inflate score predictions
+        if min_avg < 5.0:
+            continue
         fg_pct = float(p.get("FG_PCT") or 0.45)
         three_pct = float(p.get("FG3_PCT") or 0.35)
         if fg_pct > 1:
             fg_pct /= 100
         if three_pct > 1:
             three_pct /= 100
-        min_avg = float(p.get("MIN") or 0)
         fga_avg = float(p.get("FGA") or 0)
         fta_avg = float(p.get("FTA") or 0)
-        tov_avg = float(p.get("TOV") or 0)
-        possessions_used = fga_avg + 0.44 * fta_avg + tov_avg
-        usage_rate = min(0.42, max(0.08, possessions_used / max(1.0, min_avg * 0.4)))
+        tov_avg_raw = float(p.get("TOV") or 0)
+        pts_avg = float(p.get("PTS") or 0)
+        ast_avg = float(p.get("AST") or 0)
+        reb_avg = float(p.get("REB") or 0)
+        stl_avg = float(p.get("STL") or 0)
+        blk_avg = float(p.get("BLK") or 0)
+        fg3m_avg = float(p.get("FG3M") or 0)
+        # NBA usage rate: possessions / (min × team_pace_per_min)
+        # Approximation: poss_used * 0.48 / min_avg gives ~10-35% realistic range
+        possessions_used = fga_avg + 0.44 * fta_avg + tov_avg_raw
+        usage_rate = min(0.38, max(0.08, (possessions_used * 0.48) / max(1.0, min_avg)))
+        player_id_str = str(p.get("PLAYER_ID", "0"))
+        is_dnp = _recent_dnp(player_id_str)
         players.append(PlayerGameState(
-            player_id=str(p.get("PLAYER_ID", "0")),
+            player_id=player_id_str,
             player_name=str(p.get("PLAYER_NAME", "Unknown")),
             team_id=team_id,
             rotation_role="starter" if len(players) < 5 else "bench",
+            availability_status="dnp" if is_dnp else "available",
+            dnp_reason="DNP last 5 games" if is_dnp else None,
             usage_rate=round(usage_rate, 3),
             points=0.0,
             assists=0.0,
@@ -223,6 +260,13 @@ def _build_team_state_from_season_stats(team_raw: dict, score: int, season_playe
             matchup_difficulty=0.45,
             drive_frequency=0.18,
             paint_touches=4,
+            pts_avg=pts_avg,
+            ast_avg=ast_avg,
+            reb_avg=reb_avg,
+            stl_avg=stl_avg,
+            blk_avg=blk_avg,
+            tov_avg=tov_avg_raw,
+            fg3m_avg=fg3m_avg,
         ))
 
     return TeamGameState(

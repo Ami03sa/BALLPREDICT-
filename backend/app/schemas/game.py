@@ -47,6 +47,7 @@ class PlayerProjection(BaseModel):
     momentum_score: float
     fatigue_index: float
     defensive_pressure: float
+    hot_factor: float = 1.0
     adjustments: list[CoachingAdjustment]
 
 

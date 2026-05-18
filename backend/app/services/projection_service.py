@@ -23,11 +23,13 @@ class ProjectionService:
             for player in context.away_team.players
         ]
 
-        # Only the top 9 contributors by projected points (realistic playoff/game lineup).
-        # Summing all 20 roster players inflates the total far beyond real game scores.
+        # Sum top active contributors only — exclude DNPs, cap at 8 (realistic rotation).
+        # Also cap the total at 140 to guard against model inflation.
         def _team_pts_sum(projections: list) -> int:
-            top9 = sorted(projections, key=lambda p: p.projected_stats.mean.points, reverse=True)[:9]
-            return round(sum(p.projected_stats.mean.points for p in top9))
+            active = [p for p in projections if p.availability_status != "dnp"]
+            top8 = sorted(active, key=lambda p: p.projected_stats.mean.points, reverse=True)[:8]
+            raw = sum(p.projected_stats.mean.points for p in top8)
+            return round(min(140, raw))
 
         home_pts_sum = _team_pts_sum(home_player_projections)
         away_pts_sum = _team_pts_sum(away_player_projections)
