@@ -1,14 +1,12 @@
 import sqlite3
 from pathlib import Path
 
-from app.schemas.game import GameSnapshot
+from app.schemas.game import ConfidenceBand, GameSnapshot, PlayerProjection, StatLine
 from app.services.insight_service import insight_service
 from app.simulation.prediction_engine import prediction_engine
 from app.simulation.state import GameContext
 
 _DB_PATH = Path(__file__).parent.parent.parent / "data" / "nba_training.db"
-
-# Total player-minutes per team per game (5 players × 48 min).
 _GAME_MINUTES = 240.0
 
 
@@ -43,6 +41,22 @@ def _fetch_avg_minutes(player_ids: list[str]) -> dict[str, float]:
         return {pid: 15.0 for pid in player_ids}
 
 
+def _rescale_player_pts(proj: PlayerProjection, scale: float) -> PlayerProjection:
+    """Rescale a player's projected points (mean/low/high) by the team calibration factor."""
+    if proj.availability_status == "dnp" or abs(scale - 1.0) < 0.001:
+        return proj
+
+    def _scale_line(line: StatLine) -> StatLine:
+        return line.model_copy(update={"points": round(line.points * scale, 1)})
+
+    new_band = ConfidenceBand(
+        low=_scale_line(proj.projected_stats.low),
+        mean=_scale_line(proj.projected_stats.mean),
+        high=_scale_line(proj.projected_stats.high),
+    )
+    return proj.model_copy(update={"projected_stats": new_band})
+
+
 class ProjectionService:
     def build_snapshot(
         self,
@@ -60,51 +74,54 @@ class ProjectionService:
             for player in context.away_team.players
         ]
 
-        # One DB round-trip to get avg minutes for all active players.
         all_active_ids = [
             p.player_id for p in home_player_projections + away_player_projections
             if p.availability_status != "dnp"
         ]
         avg_min = _fetch_avg_minutes(all_active_ids)
 
-        def _team_pts_sum(projections: list, off_rating: float, pace: float) -> int:
+        def _blended_team_total(projections: list, off_rating: float, pace: float) -> int:
             active = [p for p in projections if p.availability_status != "dnp"]
+            raw = sum(p.projected_stats.mean.points for p in active)
+            if raw <= 0:
+                return 0
 
-            # --- Player-model estimate ---
-            # Each XGBoost prediction reflects a player's typical per-game output.
-            # But summing 12+ players whose average minutes exceed 240 double-counts
-            # production, so we scale by how much the minute budget is over 240.
+            # Minutes normalization: scale down when active roster minutes exceed 240
             total_proj_min = sum(avg_min.get(p.player_id, 15.0) for p in active)
             minute_scale = min(1.0, _GAME_MINUTES / max(1.0, total_proj_min))
-            player_estimate = sum(p.projected_stats.mean.points for p in active) * minute_scale
+            player_estimate = raw * minute_scale
 
-            # --- Pace-efficiency anchor ---
-            # Expected team pts = (offensive rating / 100) × possessions per game.
-            # This grounds the prediction in the team's actual scoring efficiency
-            # independent of how many players the model includes.
+            # Pace-efficiency anchor: (offensive_rating / 100) × possessions per game
             pace_estimate = (off_rating * pace) / 100.0
 
-            # Blend: 60% player model, 40% pace anchor.
-            # The player model captures matchup/player-level nuance;
-            # the pace anchor prevents the sum from drifting too far from team baselines.
             return round(player_estimate * 0.6 + pace_estimate * 0.4)
 
-        home_pts_sum = _team_pts_sum(
+        home_total = _blended_team_total(
             home_player_projections,
             context.home_team.offensive_rating,
             context.home_team.pace,
         )
-        away_pts_sum = _team_pts_sum(
+        away_total = _blended_team_total(
             away_player_projections,
             context.away_team.offensive_rating,
             context.away_team.pace,
         )
 
+        # Rescale each active player's projected points so they sum to the team total.
+        # DNP players stay at zero; the scale factor is applied to mean/low/high.
+        def _apply_scale(projections: list, team_total: int) -> list[PlayerProjection]:
+            raw = sum(p.projected_stats.mean.points for p in projections if p.availability_status != "dnp")
+            scale = team_total / max(1.0, raw)
+            return [_rescale_player_pts(p, scale) for p in projections]
+
+        home_player_projections = _apply_scale(home_player_projections, home_total)
+        away_player_projections = _apply_scale(away_player_projections, away_total)
+
         home_projection = prediction_engine.project_team(
-            context, context.home_team, context.away_team, True, player_score_sum=home_pts_sum
+            context, context.home_team, context.away_team, True, player_score_sum=home_total
         )
         away_projection = prediction_engine.project_team(
-            context, context.away_team, context.home_team, False, player_score_sum=away_pts_sum
+            context, context.away_team, context.home_team, False, player_score_sum=away_total
         )
 
         player_projections = home_player_projections + away_player_projections
