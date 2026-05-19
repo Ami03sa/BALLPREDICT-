@@ -112,7 +112,6 @@ def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame) -> pd.DataFrame:
     logs["is_home"] = (logs["home_away"] == "H").astype(int)
 
     # Join opponent defensive stats
-    # Opponent's defensive profile for that season/season_type
     logs = logs.merge(
         def_stats.rename(columns={
             "team_abbreviation": "opponent_abbreviation",
@@ -123,13 +122,31 @@ def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame) -> pd.DataFrame:
         on=["opponent_abbreviation", "season", "season_type"],
         how="left",
     )
-
-    # Fill missing opponent stats with league average
     logs["opp_pts_per_game"] = logs["opp_pts_per_game"].fillna(114.0)
     logs["opp_fg_pct"]       = logs["opp_fg_pct"].fillna(0.46)
     logs["opp_fg3_pct"]      = logs["opp_fg3_pct"].fillna(0.36)
 
-    # Drop rows where we don't have enough history (first game of career)
+    # Head-to-head history: rolling stats vs each specific opponent.
+    # Sort per (player, opponent, date) so shift(1) excludes the current game.
+    print("  Computing head-to-head features...")
+    h2h_cols = []
+    tmp = logs.sort_values(["player_id", "opponent_abbreviation", "game_date"]).copy()
+    for stat in ["pts", "ast", "reb"]:
+        g = tmp.groupby(["player_id", "opponent_abbreviation"])[stat]
+        tmp[f"{stat}_vs_opp_last3"] = g.transform(lambda x: x.shift(1).rolling(3, min_periods=1).mean())
+        tmp[f"{stat}_vs_opp_avg"]   = g.transform(lambda x: x.shift(1).expanding().mean())
+        h2h_cols += [f"{stat}_vs_opp_last3", f"{stat}_vs_opp_avg"]
+
+    logs = logs.merge(
+        tmp[["player_id", "game_id"] + h2h_cols].drop_duplicates(["player_id", "game_id"]),
+        on=["player_id", "game_id"],
+        how="left",
+    )
+    # Fall back to season average when no prior H2H games exist
+    for stat in ["pts", "ast", "reb"]:
+        logs[f"{stat}_vs_opp_last3"] = logs[f"{stat}_vs_opp_last3"].fillna(logs[f"{stat}_season_avg"])
+        logs[f"{stat}_vs_opp_avg"]   = logs[f"{stat}_vs_opp_avg"].fillna(logs[f"{stat}_season_avg"])
+
     feature_cols = _feature_cols()
     logs = logs.dropna(subset=feature_cols + TARGETS)
 
@@ -142,14 +159,19 @@ def _feature_cols() -> list[str]:
     for stat in ROLL_STATS:
         cols += [f"{stat}_last5", f"{stat}_last10", f"{stat}_season_avg"]
     cols += ["opp_pts_per_game", "opp_fg_pct", "opp_fg3_pct", "is_home", "rest_days"]
+    for stat in ["pts", "ast", "reb"]:
+        cols += [f"{stat}_vs_opp_last3", f"{stat}_vs_opp_avg"]
     return cols
 
 
 # ── Train / evaluate ──────────────────────────────────────────────────────────
 
 def train_models(df: pd.DataFrame) -> dict:
-    train = df[df["season"] == "2023-24"]
-    test  = df[(df["season"] == "2024-25") & (df["season_type"] == "Regular Season")]
+    # Train on all seasons except last; test on most recent regular season
+    seasons = sorted(df["season"].unique())
+    test_season = seasons[-1]
+    train = df[df["season"] != test_season]
+    test  = df[(df["season"] == test_season) & (df["season_type"] == "Regular Season")]
 
     print(f"\nTrain: {len(train):,} rows  |  Test: {len(test):,} rows")
 

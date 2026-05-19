@@ -129,7 +129,61 @@ def _rolling(values: list[float], n: int) -> float:
     return float(np.mean(subset)) if subset else 0.0
 
 
-def _build_features(player: PlayerGameState, history: dict, opp_def: dict, is_home: bool) -> dict:
+def _rest_days(player_id: str) -> float:
+    """Days between the player's last logged game and today. Clamped 1–14."""
+    if not _DB_PATH.exists():
+        return 2.0
+    try:
+        from datetime import date
+        conn = sqlite3.connect(str(_DB_PATH))
+        row = conn.execute(
+            "SELECT MAX(game_date) FROM player_game_logs WHERE player_id = ? AND min > 0",
+            (player_id,),
+        ).fetchone()
+        conn.close()
+        if not row or not row[0]:
+            return 2.0
+        last = date.fromisoformat(str(row[0])[:10])
+        return float(max(1, min(14, (date.today() - last).days)))
+    except Exception:
+        return 2.0
+
+
+def _player_vs_opp(player_id: str, opponent_id: str) -> dict:
+    """Historical stats for this player specifically against this opponent team."""
+    if not _DB_PATH.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        rows = conn.execute(
+            """
+            SELECT pts, ast, reb
+            FROM player_game_logs
+            WHERE player_id = ? AND opponent_abbreviation = ? AND min > 0
+            ORDER BY game_date DESC
+            LIMIT 10
+            """,
+            (player_id, opponent_id.upper()),
+        ).fetchall()
+        conn.close()
+        if not rows:
+            return {}
+        return {
+            "pts": [r[0] for r in rows],
+            "ast": [r[1] for r in rows],
+            "reb": [r[2] for r in rows],
+        }
+    except Exception:
+        return {}
+
+
+def _build_features(
+    player: PlayerGameState,
+    history: dict,
+    opp_def: dict,
+    is_home: bool,
+    h2h: dict | None = None,
+) -> dict:
     row: dict[str, float] = {}
     for stat in ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov", "min", "fg_pct", "fg3_pct"]:
         vals = history.get(stat, [])
@@ -140,12 +194,22 @@ def _build_features(player: PlayerGameState, history: dict, opp_def: dict, is_ho
     row["opp_fg_pct"]       = opp_def.get("opp_fg_pct", 0.46)
     row["opp_fg3_pct"]      = opp_def.get("opp_fg3_pct", 0.36)
     row["is_home"]          = float(is_home)
-    row["rest_days"]        = 2.0
+    row["rest_days"]        = _rest_days(player.player_id)
+
+    # Head-to-head history: how this player performs vs this specific opponent.
+    # Falls back to season average when no prior matchup data exists.
+    h2h = h2h or {}
+    for stat in ["pts", "ast", "reb"]:
+        vals = h2h.get(stat, [])
+        fallback = row.get(f"{stat}_season_avg", 0.0)
+        row[f"{stat}_vs_opp_last3"] = _rolling(vals, 3) if vals else fallback
+        row[f"{stat}_vs_opp_avg"]   = float(np.mean(vals)) if vals else fallback
+
     return row
 
 
 _NOISE_SCALES: dict[str, float] = {
-    # Rolling scoring stats — higher variance in last-5 than last-10
+    # Rolling stats — higher variance in last-5 than last-10
     "pts_last5": 3.0,   "pts_last10": 1.8,   "pts_season_avg": 1.0,
     "ast_last5": 1.0,   "ast_last10": 0.6,   "ast_season_avg": 0.3,
     "reb_last5": 1.5,   "reb_last10": 0.9,   "reb_season_avg": 0.5,
@@ -154,15 +218,14 @@ _NOISE_SCALES: dict[str, float] = {
     "fg3m_last5": 0.8,  "fg3m_last10": 0.5,  "fg3m_season_avg": 0.3,
     "tov_last5": 0.5,   "tov_last10": 0.3,   "tov_season_avg": 0.2,
     "min_last5": 2.5,   "min_last10": 1.5,   "min_season_avg": 1.0,
-    # Shooting percentages
     "fg_pct_last5": 0.030,  "fg_pct_last10": 0.018,  "fg_pct_season_avg": 0.010,
     "fg3_pct_last5": 0.040, "fg3_pct_last10": 0.025, "fg3_pct_season_avg": 0.015,
-    # Opponent defense varies game-to-game
-    "opp_pts_per_game": 2.5,
-    "opp_fg_pct": 0.020,
-    "opp_fg3_pct": 0.025,
-    # Rest days uncertainty (we default to 2.0)
+    "opp_pts_per_game": 2.5, "opp_fg_pct": 0.020, "opp_fg3_pct": 0.025,
     "rest_days": 0.8,
+    # H2H noise — matchup history has small samples so higher variance
+    "pts_vs_opp_last3": 4.5, "pts_vs_opp_avg": 2.5,
+    "ast_vs_opp_last3": 1.5, "ast_vs_opp_avg": 0.8,
+    "reb_vs_opp_last3": 2.0, "reb_vs_opp_avg": 1.0,
 }
 
 _N_RUNS = 200  # number of perturbed runs per prediction
@@ -178,7 +241,8 @@ def _xgb_predict(player: PlayerGameState, opponent_id: str, is_home: bool) -> di
         return None
     history  = _player_history(player.player_id)
     opp_def  = _opponent_def_stats(opponent_id)
-    feat_row = _build_features(player, history, opp_def, is_home)
+    h2h      = _player_vs_opp(player.player_id, opponent_id)
+    feat_row = _build_features(player, history, opp_def, is_home, h2h)
     feature_cols = _MODELS["_features"]
 
     base_X = np.array([feat_row.get(c, 0.0) for c in feature_cols])
