@@ -31,6 +31,43 @@ def _recent_dnp(player_id: str) -> bool:
     except Exception:
         return False
 
+def get_quarter_weights(player_id: str) -> list[float] | None:
+    """
+    Return [q1_w, q2_w, q3_w, q4_w] based on real historical per-quarter scoring ratios.
+    Tries current season first, then falls back to previous season.
+    Returns None if no data is available (caller falls back to coaching-pressure weights).
+    """
+    if not _DB_PATH.exists():
+        return None
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        # Try to find any season with all 4 quarters populated for this player
+        rows = conn.execute(
+            """
+            SELECT season, season_type, quarter, pts
+            FROM player_quarter_splits
+            WHERE player_id = ? AND quarter BETWEEN 1 AND 4 AND gp >= 3
+            ORDER BY season DESC, CASE season_type WHEN 'Playoffs' THEN 0 ELSE 1 END, quarter
+            """,
+            (player_id,),
+        ).fetchall()
+        conn.close()
+
+        # Group by (season, season_type) and pick first group that has all 4 quarters
+        from itertools import groupby
+        for (season, stype), group in groupby(rows, key=lambda r: (r[0], r[1])):
+            pts_by_q = {r[2]: r[3] for r in group}
+            if len(pts_by_q) < 4:
+                continue
+            total = sum(pts_by_q.values())
+            if total <= 0:
+                continue
+            return [pts_by_q[q] / total for q in [1, 2, 3, 4]]
+        return None
+    except Exception:
+        return None
+
+
 logger = logging.getLogger(__name__)
 
 TEAM_FULL_NAMES: dict[str, str] = {

@@ -18,6 +18,7 @@ from app.schemas.game import (
     TeamProjection,
 )
 from app.services import nba_api_service
+from app.services.nba_api_service import get_quarter_weights
 from app.services.projection_service import projection_service
 from app.services.providers.nba_live_client import nba_live_client
 from app.simulation.coaching_engine import coaching_engine
@@ -420,61 +421,52 @@ class LiveGameService:
         q = context.quarter
         remaining_q = max(0, 4 - q)
 
-        # Quarter weights reflect real NBA game flow:
-        # Q1 — player is open, no film adjustments deployed yet → highest share
-        # Q2 — opposing coach starts blitzing / switching based on Q1 tendencies
-        # Q3 — halftime scouting report lands, full adjustment package active
-        # Q4 — fatigue + complete defensive scheme → lowest natural share
-        # Each coaching adjustment suppresses Q2-Q4 progressively more.
-        #
-        # Hot factor (last-3 vs last-10 ratio) models takeover potential:
-        # A hot player's weight shifts toward later quarters — they keep attacking,
-        # force the defense to respond, and can take over any quarter unpredictably.
-        # A cold player front-loads their contribution (defense already figured them out).
         n_adj    = len(projection.adjustments)
         pressure = projection.defensive_pressure   # 0.0 – 1.0
         hot      = projection.hot_factor           # 0.70 – 1.45
 
-        # Base suppression from coaching adjustments
-        base = [
-            0.28,
-            max(0.18, 0.26 - n_adj * 0.015),
-            max(0.15, 0.25 - n_adj * 0.035),
-            max(0.12, 0.21 - n_adj * 0.05 - pressure * 0.04),
-        ]
+        # Use real historical Q1/Q2/Q3/Q4 scoring ratios when available;
+        # otherwise fall back to league-average front-loaded weights.
+        real_w = get_quarter_weights(projection.player_id)
+        if real_w:
+            # Coaching suppression: Q1 is the "free" quarter (no adjustments yet).
+            # Q2-Q4 are suppressed progressively as the opponent's scouting report deploys.
+            suppression = [
+                1.0,
+                max(0.65, 1.0 - n_adj * 0.06),
+                max(0.55, 1.0 - n_adj * 0.14),
+                max(0.45, 1.0 - n_adj * 0.20 - pressure * 0.15),
+            ]
+            base = [w * s for w, s in zip(real_w, suppression)]
+        else:
+            base = [
+                0.28,
+                max(0.18, 0.26 - n_adj * 0.015),
+                max(0.15, 0.25 - n_adj * 0.035),
+                max(0.12, 0.21 - n_adj * 0.05 - pressure * 0.04),
+            ]
 
-        # Hot players shift weight toward Q3/Q4 (takeover / late-game dominance).
-        # Cold players lose weight in Q3/Q4 (defense has them figured out).
-        takeover_shift = (hot - 1.0) * 0.06   # +0.027 per quarter for hot=1.45, negative if cold
+        # Hot factor: back-load hot players (takeover potential), front-load cold ones.
+        takeover_shift = (hot - 1.0) * 0.06
         raw_w = [
-            base[0] - takeover_shift * 1.5,   # Q1: slightly less if hot (saves energy)
-            base[1] - takeover_shift * 0.5,   # Q2: mild shift
-            base[2] + takeover_shift * 0.8,   # Q3: hot players elevate here
-            base[3] + takeover_shift * 1.2,   # Q4: biggest takeover boost for hot players
+            base[0] - takeover_shift * 1.5,
+            base[1] - takeover_shift * 0.5,
+            base[2] + takeover_shift * 0.8,
+            base[3] + takeover_shift * 1.2,
         ]
         raw_w = [max(0.08, w) for w in raw_w]
         total_w = sum(raw_w)
-        weights = [w / total_w for w in raw_w]  # normalise so Q1+Q2+Q3+Q4 == full prediction
+        weights = [w / total_w for w in raw_w]
 
-        def _split(actual: float, projected: float) -> list[float]:
-            if q == 0:
-                # Pre-game: distribute full projection by quarter weights
-                return [round(projected * w, 1) for w in weights]
-            # Live: past quarters from actual stats (averaged), future from remaining projected
-            past_per_q = round(actual / q, 1) if q > 0 else 0.0
-            remaining = max(0.0, projected - actual)
-            future_raw = weights[q:4]
-            future_total = sum(future_raw) or 1.0
-            future = [round(remaining * (w / future_total), 1) for w in future_raw]
-            result = [past_per_q] * min(q, 4) + future
-            while len(result) < 4:
-                result.append(0.0)
-            return result[:4]
+        def _split(projected: float) -> list[float]:
+            # Always show the predicted quarter breakdown — never replace with actual stats.
+            # Actual stats are shown separately in the live_stats column.
+            return [round(projected * w, 1) for w in weights]
 
-        pts_q  = _split(live.points,      proj.points)
-        ast_q  = _split(live.assists,     proj.assists)
-        reb_q  = _split(live.rebounds,    proj.rebounds)
-        fg3_q  = _split(live.threes_made, proj.threes_made)
+        pts_q  = _split(proj.points)
+        ast_q  = _split(proj.assists)
+        reb_q  = _split(proj.rebounds)
+        fg3_q  = _split(proj.threes_made)
 
         quarter_breakdown = [
             PlayerQuarterProjection(quarter="Q1", points=pts_q[0], assists=ast_q[0], rebounds=reb_q[0], threes_made=fg3_q[0]),

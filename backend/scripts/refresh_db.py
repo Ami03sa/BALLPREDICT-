@@ -43,10 +43,10 @@ def _current_season() -> str:
     return f"{d.year}-{str(d.year + 1)[2:]}" if d.month >= 10 else f"{d.year - 1}-{str(d.year)[2:]}"
 
 
-def _get(endpoint: str, params: dict) -> dict:
+def _get(endpoint: str, params: dict, timeout: float = 30.0) -> dict:
     """Single stats.nba.com request with a polite delay."""
     time.sleep(0.6)
-    with httpx.Client(timeout=30.0, headers=_HEADERS, follow_redirects=True) as client:
+    with httpx.Client(timeout=timeout, headers=_HEADERS, follow_redirects=True) as client:
         r = client.get(f"{_BASE}/{endpoint}", params=params)
         r.raise_for_status()
         return r.json()
@@ -223,6 +223,83 @@ def _refresh_defensive_stats(conn: sqlite3.Connection, season: str, season_type:
     print(f"    → {len(rows)} teams updated")
 
 
+_QUARTER_SPLIT_PARAMS = {
+    "MeasureType": "Base", "PerMode": "PerGame", "LeagueID": "00",
+    "DateFrom": "", "DateTo": "", "GameScope": "", "GameSegment": "",
+    "ISTRound": "", "LastNGames": 0, "Location": "", "Month": 0,
+    "OpponentTeamID": 0, "Outcome": "", "PORound": 0,
+    "PaceAdjust": "N", "PlayerExperience": "", "PlayerPosition": "",
+    "PlusMinus": "N", "Rank": "N", "SeasonSegment": "",
+    "ShotClockRange": "", "StarterBench": "", "TwoWay": 0,
+    "VsConference": "", "VsDivision": "",
+}
+
+
+def _ensure_quarter_splits_table(conn: sqlite3.Connection) -> None:
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS player_quarter_splits (
+            player_id   TEXT NOT NULL,
+            season      TEXT NOT NULL,
+            season_type TEXT NOT NULL,
+            quarter     INTEGER NOT NULL,
+            pts         REAL DEFAULT 0,
+            ast         REAL DEFAULT 0,
+            reb         REAL DEFAULT 0,
+            fg3m        REAL DEFAULT 0,
+            gp          INTEGER DEFAULT 0,
+            PRIMARY KEY (player_id, season, season_type, quarter)
+        )
+    """)
+    conn.commit()
+
+
+def _refresh_quarter_splits(conn: sqlite3.Connection, season: str, season_type: str) -> None:
+    """Fetch per-quarter per-player scoring averages and store in player_quarter_splits."""
+    _ensure_quarter_splits_table(conn)
+    print(f"  Refreshing quarter splits: {season} {season_type} ...")
+    for q in [1, 2, 3, 4]:
+        print(f"    Fetching Q{q} ...")
+        try:
+            data = _get("leaguedashplayerstats", {
+                **_QUARTER_SPLIT_PARAMS,
+                "Season": season,
+                "SeasonType": season_type,
+                "Period": q,
+            }, timeout=75.0)
+        except Exception as e:
+            print(f"    ✗ Q{q} failed: {e}")
+            continue
+
+        rs = next((r for r in data.get("resultSets", []) if r["name"] == "LeagueDashPlayerStats"), {})
+        headers = rs.get("headers", [])
+        rows = rs.get("rowSet", [])
+
+        conn.execute(
+            "DELETE FROM player_quarter_splits WHERE season = ? AND season_type = ? AND quarter = ?",
+            (season, season_type, q),
+        )
+        for row in rows:
+            r = dict(zip(headers, row))
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO player_quarter_splits
+                  (player_id, season, season_type, quarter, pts, ast, reb, fg3m, gp)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    str(r.get("PLAYER_ID", "")),
+                    season, season_type, q,
+                    float(r.get("PTS") or 0),
+                    float(r.get("AST") or 0),
+                    float(r.get("REB") or 0),
+                    float(r.get("FG3M") or 0),
+                    int(r.get("GP") or 0),
+                ),
+            )
+        conn.commit()
+        print(f"    → {len(rows)} players for Q{q}")
+
+
 def refresh(force_date: str | None = None) -> None:
     conn = sqlite3.connect(str(DB_PATH))
 
@@ -257,6 +334,13 @@ def refresh(force_date: str | None = None) -> None:
             _refresh_defensive_stats(conn, season, season_type)
         except Exception as e:
             print(f"  ✗ Defensive stats ({season_type}) failed: {e}")
+
+    # Refresh per-quarter splits (used for realistic quarter breakdown charts)
+    for season_type in ["Regular Season", "Playoffs"]:
+        try:
+            _refresh_quarter_splits(conn, season, season_type)
+        except Exception as e:
+            print(f"  ✗ Quarter splits ({season_type}) failed: {e}")
 
     new_latest = _latest_date_in_db(conn)
     total_rows = conn.execute("SELECT COUNT(*) FROM player_game_logs").fetchone()[0]

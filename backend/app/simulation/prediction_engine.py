@@ -141,14 +141,62 @@ def _build_features(player: PlayerGameState, history: dict, opp_def: dict, is_ho
     return row
 
 
-def _xgb_predict(player: PlayerGameState, opponent_id: str, is_home: bool) -> dict[str, float] | None:
+_NOISE_SCALES: dict[str, float] = {
+    # Rolling scoring stats — higher variance in last-5 than last-10
+    "pts_last5": 3.0,   "pts_last10": 1.8,   "pts_season_avg": 1.0,
+    "ast_last5": 1.0,   "ast_last10": 0.6,   "ast_season_avg": 0.3,
+    "reb_last5": 1.5,   "reb_last10": 0.9,   "reb_season_avg": 0.5,
+    "stl_last5": 0.4,   "stl_last10": 0.25,  "stl_season_avg": 0.15,
+    "blk_last5": 0.5,   "blk_last10": 0.3,   "blk_season_avg": 0.2,
+    "fg3m_last5": 0.8,  "fg3m_last10": 0.5,  "fg3m_season_avg": 0.3,
+    "tov_last5": 0.5,   "tov_last10": 0.3,   "tov_season_avg": 0.2,
+    "min_last5": 2.5,   "min_last10": 1.5,   "min_season_avg": 1.0,
+    # Shooting percentages
+    "fg_pct_last5": 0.030,  "fg_pct_last10": 0.018,  "fg_pct_season_avg": 0.010,
+    "fg3_pct_last5": 0.040, "fg3_pct_last10": 0.025, "fg3_pct_season_avg": 0.015,
+    # Opponent defense varies game-to-game
+    "opp_pts_per_game": 2.5,
+    "opp_fg_pct": 0.020,
+    "opp_fg3_pct": 0.025,
+    # Rest days uncertainty (we default to 2.0)
+    "rest_days": 0.8,
+}
+
+_N_RUNS = 200  # number of perturbed runs per prediction
+
+
+def _xgb_predict(player: PlayerGameState, opponent_id: str, is_home: bool) -> dict[str, dict] | None:
+    """
+    Run each XGBoost model _N_RUNS times with perturbed features and return
+    the mean and std of predictions. Adding noise to rolling stats and opponent
+    defense captures real game-to-game variance and gives data-driven CI.
+    """
     if _MODELS is None:
         return None
     history  = _player_history(player.player_id)
     opp_def  = _opponent_def_stats(opponent_id)
     feat_row = _build_features(player, history, opp_def, is_home)
-    X = np.array([[feat_row.get(c, 0.0) for c in _MODELS["_features"]]])
-    return {t: float(max(0.0, _MODELS[t].predict(X)[0])) for t in _TARGETS}
+    feature_cols = _MODELS["_features"]
+
+    base_X = np.array([feat_row.get(c, 0.0) for c in feature_cols])
+
+    # Build noise matrix: shape (N_RUNS, n_features)
+    noise = np.zeros((_N_RUNS, len(feature_cols)))
+    for i, col in enumerate(feature_cols):
+        scale = _NOISE_SCALES.get(col, 0.0)
+        if scale > 0:
+            noise[:, i] = np.random.normal(0, scale, _N_RUNS)
+
+    X_batch = np.clip(np.tile(base_X, (_N_RUNS, 1)) + noise, 0, None)
+
+    results: dict[str, dict] = {}
+    for t in _TARGETS:
+        preds = np.clip(_MODELS[t].predict(X_batch), 0, None)
+        results[t] = {
+            "mean": float(np.mean(preds)),
+            "std":  float(np.std(preds)),
+        }
+    return results
 
 
 class PredictionEngine:
@@ -190,29 +238,30 @@ class PredictionEngine:
         preds = _xgb_predict(player, defense.team_id, is_home)
 
         if preds is not None:
-            # XGBoost full-game prediction adjusted for quarters already played.
-            # hot_factor is NOT applied to the mean — XGBoost already captures recent
-            # form through rolling averages. hot_factor only widens/tightens the band.
-            remaining_frac = max(0.0, (4 - context.quarter) / 4.0)
-            proj_pts  = round(player.points  + max(0.0, preds["pts"]  - player.points)  * remaining_frac, 1)
-            proj_ast  = round(player.assists + max(0.0, preds["ast"]  - player.assists) * remaining_frac, 1)
-            proj_reb  = round(player.rebounds + max(0.0, preds["reb"] - player.rebounds) * remaining_frac, 1)
-            proj_stl  = round(player.steals  + max(0.0, preds["stl"]  - player.steals)  * remaining_frac, 1)
-            proj_blk  = round(player.blocks  + max(0.0, preds["blk"]  - player.blocks)  * remaining_frac, 1)
-            proj_tov  = round(player.turnovers + max(0.0, preds["tov"] - player.turnovers) * remaining_frac, 1)
-            proj_fg3m = round(player.threes_made + max(0.0, preds["fg3m"] - player.threes_made) * remaining_frac, 1)
+            # Use ensemble mean — more robust than a single run.
+            proj_pts  = round(preds["pts"]["mean"],  1)
+            proj_ast  = round(preds["ast"]["mean"],  1)
+            proj_reb  = round(preds["reb"]["mean"],  1)
+            proj_stl  = round(preds["stl"]["mean"],  1)
+            proj_blk  = round(preds["blk"]["mean"],  1)
+            proj_tov  = round(preds["tov"]["mean"],  1)
+            proj_fg3m = round(preds["fg3m"]["mean"], 1)
 
-            spread = 1.0 + pressure * 1.8
+            # Confidence band driven by prediction std — no manual multipliers needed.
+            pts_std = preds["pts"]["std"]
+            ast_std = preds["ast"]["std"]
+            reb_std = preds["reb"]["std"]
+            tov_std = preds["tov"]["std"]
+            spread  = pts_std  # kept for hot_factor ceiling calculation
         else:
-            # XGBoost unavailable — use season averages directly.
-            remaining_q = max(0, 4 - context.quarter)
-            proj_pts  = round(player.points  + (player.pts_avg  / 4.0) * remaining_q, 1) if player.pts_avg  > 0 else round(player.points,  1)
-            proj_ast  = round(player.assists + (player.ast_avg  / 4.0) * remaining_q, 1) if player.ast_avg  > 0 else round(player.assists, 1)
-            proj_reb  = round(player.rebounds + (player.reb_avg / 4.0) * remaining_q, 1) if player.reb_avg  > 0 else round(player.rebounds, 1)
-            proj_stl  = round(player.steals  + (player.stl_avg  / 4.0) * remaining_q, 1) if player.stl_avg  > 0 else round(player.steals,  1)
-            proj_blk  = round(player.blocks  + (player.blk_avg  / 4.0) * remaining_q, 1) if player.blk_avg  > 0 else round(player.blocks,  1)
-            proj_tov  = round(player.turnovers + (player.tov_avg / 4.0) * remaining_q, 1) if player.tov_avg > 0 else round(player.turnovers, 1)
-            proj_fg3m = round(player.threes_made + (player.fg3m_avg / 4.0) * remaining_q, 1) if player.fg3m_avg > 0 else round(player.threes_made, 1)
+            # XGBoost unavailable — season average is the full-game prediction.
+            proj_pts  = round(player.pts_avg,  1) if player.pts_avg  > 0 else 0.0
+            proj_ast  = round(player.ast_avg,  1) if player.ast_avg  > 0 else 0.0
+            proj_reb  = round(player.reb_avg,  1) if player.reb_avg  > 0 else 0.0
+            proj_stl  = round(player.stl_avg,  1) if player.stl_avg  > 0 else 0.0
+            proj_blk  = round(player.blk_avg,  1) if player.blk_avg  > 0 else 0.0
+            proj_tov  = round(player.tov_avg,  1) if player.tov_avg  > 0 else 0.0
+            proj_fg3m = round(player.fg3m_avg, 1) if player.fg3m_avg > 0 else 0.0
             spread = 1.2 + pressure * 2.0
 
         mean_line = StatLine(
@@ -223,24 +272,38 @@ class PredictionEngine:
             field_goal_pct=round(max(0.33, min(0.68, player.field_goal_pct)), 3),
             three_point_pct=round(max(0.25, min(0.55, player.three_point_pct)), 3),
         )
-        # Hot players get a tighter floor (harder to have a bad game mid-streak)
-        # and a much higher ceiling (takeover potential is real).
-        # Cold players get a wider floor (regression likely) and lower ceiling.
-        floor_mult   = 1.0 - (hot - 1.0) * 0.4   # hot=1.45 → floor_mult=0.82 (tighter)
-        ceiling_mult = 1.0 + (hot - 1.0) * 1.8    # hot=1.45 → ceiling_mult=1.81 (way higher)
+        # Floor/ceiling from ensemble std — data-driven, no manual multipliers.
+        # Hot players widen the ceiling further; cold players widen the floor.
+        ceiling_mult = 1.0 + (hot - 1.0) * 1.8
+        floor_mult   = 1.0 - (hot - 1.0) * 0.4
 
-        low_line = mean_line.model_copy(update={
-            "points":    round(max(0, proj_pts  - spread * 2.2 * floor_mult), 1),
-            "assists":   round(max(0, proj_ast  - spread * 0.8 * floor_mult), 1),
-            "rebounds":  round(max(0, proj_reb  - spread * 0.7 * floor_mult), 1),
-            "turnovers": round(max(0, proj_tov  - 0.4), 1),
-        })
-        high_line = mean_line.model_copy(update={
-            "points":    round(proj_pts  + spread * 2.5 * ceiling_mult, 1),
-            "assists":   round(proj_ast  + spread * 1.0 * ceiling_mult, 1),
-            "rebounds":  round(proj_reb  + spread * 0.9 * ceiling_mult, 1),
-            "turnovers": round(proj_tov  + 0.6, 1),
-        })
+        if preds is not None:
+            low_line = mean_line.model_copy(update={
+                "points":    round(max(0, proj_pts - pts_std * 1.5 * floor_mult), 1),
+                "assists":   round(max(0, proj_ast - ast_std * 1.5 * floor_mult), 1),
+                "rebounds":  round(max(0, proj_reb - reb_std * 1.5 * floor_mult), 1),
+                "turnovers": round(max(0, proj_tov - tov_std * 1.0), 1),
+            })
+            high_line = mean_line.model_copy(update={
+                "points":    round(proj_pts + pts_std * 2.0 * ceiling_mult, 1),
+                "assists":   round(proj_ast + ast_std * 2.0 * ceiling_mult, 1),
+                "rebounds":  round(proj_reb + reb_std * 2.0 * ceiling_mult, 1),
+                "turnovers": round(proj_tov + tov_std * 1.0, 1),
+            })
+        else:
+            # Fallback: manual band when XGBoost unavailable
+            low_line = mean_line.model_copy(update={
+                "points":    round(max(0, proj_pts  - spread * 0.25), 1),
+                "assists":   round(max(0, proj_ast  - spread * 0.15), 1),
+                "rebounds":  round(max(0, proj_reb  - spread * 0.18), 1),
+                "turnovers": round(max(0, proj_tov  - 0.4), 1),
+            })
+            high_line = mean_line.model_copy(update={
+                "points":    round(proj_pts  + spread * 0.35 * ceiling_mult, 1),
+                "assists":   round(proj_ast  + spread * 0.20 * ceiling_mult, 1),
+                "rebounds":  round(proj_reb  + spread * 0.22 * ceiling_mult, 1),
+                "turnovers": round(proj_tov  + 0.6, 1),
+            })
 
         return PlayerProjection(
             player_id=player.player_id,
