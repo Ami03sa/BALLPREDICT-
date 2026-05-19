@@ -31,20 +31,23 @@ def _recent_dnp(player_id: str) -> bool:
     except Exception:
         return False
 
-def get_quarter_weights(player_id: str) -> list[float] | None:
+def get_quarter_weights(player_id: str) -> dict[str, list[float]] | None:
     """
-    Return [q1_w, q2_w, q3_w, q4_w] based on real historical per-quarter scoring ratios.
-    Tries current season first, then falls back to previous season.
-    Returns None if no data is available (caller falls back to coaching-pressure weights).
+    Return per-stat quarter weights derived from real historical per-quarter averages.
+
+    Returns a dict with keys 'pts', 'ast', 'reb', 'fg3m', each mapping to
+    [q1_w, q2_w, q3_w, q4_w] normalized to sum=1.0.
+    Returns None if the player has no data (caller falls back to coaching-pressure weights).
     """
     if not _DB_PATH.exists():
         return None
     try:
+        from itertools import groupby
+
         conn = sqlite3.connect(str(_DB_PATH))
-        # Try to find any season with all 4 quarters populated for this player
         rows = conn.execute(
             """
-            SELECT season, season_type, quarter, pts
+            SELECT season, season_type, quarter, pts, ast, reb, fg3m
             FROM player_quarter_splits
             WHERE player_id = ? AND quarter BETWEEN 1 AND 4 AND gp >= 3
             ORDER BY season DESC, CASE season_type WHEN 'Playoffs' THEN 0 ELSE 1 END, quarter
@@ -53,16 +56,21 @@ def get_quarter_weights(player_id: str) -> list[float] | None:
         ).fetchall()
         conn.close()
 
-        # Group by (season, season_type) and pick first group that has all 4 quarters
-        from itertools import groupby
         for (season, stype), group in groupby(rows, key=lambda r: (r[0], r[1])):
-            pts_by_q = {r[2]: r[3] for r in group}
-            if len(pts_by_q) < 4:
+            by_q = {r[2]: r for r in group}
+            if len(by_q) < 4:
                 continue
-            total = sum(pts_by_q.values())
-            if total <= 0:
-                continue
-            return [pts_by_q[q] / total for q in [1, 2, 3, 4]]
+
+            result: dict[str, list[float]] = {}
+            for col_idx, stat_key in enumerate(["pts", "ast", "reb", "fg3m"], start=3):
+                vals = {q: by_q[q][col_idx] for q in [1, 2, 3, 4]}
+                total = sum(vals.values())
+                if total > 0:
+                    result[stat_key] = [vals[q] / total for q in [1, 2, 3, 4]]
+                else:
+                    result[stat_key] = [0.25, 0.25, 0.25, 0.25]
+
+            return result if result else None
         return None
     except Exception:
         return None

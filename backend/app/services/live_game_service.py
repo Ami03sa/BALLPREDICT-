@@ -424,49 +424,51 @@ class LiveGameService:
         n_adj    = len(projection.adjustments)
         pressure = projection.defensive_pressure   # 0.0 – 1.0
         hot      = projection.hot_factor           # 0.70 – 1.45
-
-        # Use real historical Q1/Q2/Q3/Q4 scoring ratios when available;
-        # otherwise fall back to league-average front-loaded weights.
-        real_w = get_quarter_weights(projection.player_id)
-        if real_w:
-            # Coaching suppression: Q1 is the "free" quarter (no adjustments yet).
-            # Q2-Q4 are suppressed progressively as the opponent's scouting report deploys.
-            suppression = [
-                1.0,
-                max(0.65, 1.0 - n_adj * 0.06),
-                max(0.55, 1.0 - n_adj * 0.14),
-                max(0.45, 1.0 - n_adj * 0.20 - pressure * 0.15),
-            ]
-            base = [w * s for w, s in zip(real_w, suppression)]
-        else:
-            base = [
-                0.28,
-                max(0.18, 0.26 - n_adj * 0.015),
-                max(0.15, 0.25 - n_adj * 0.035),
-                max(0.12, 0.21 - n_adj * 0.05 - pressure * 0.04),
-            ]
-
-        # Hot factor: back-load hot players (takeover potential), front-load cold ones.
         takeover_shift = (hot - 1.0) * 0.06
-        raw_w = [
-            base[0] - takeover_shift * 1.5,
-            base[1] - takeover_shift * 0.5,
-            base[2] + takeover_shift * 0.8,
-            base[3] + takeover_shift * 1.2,
+
+        # Coaching suppression factors: Q1 is free, Q2-Q4 tighten as adjustments stack.
+        suppression = [
+            1.0,
+            max(0.65, 1.0 - n_adj * 0.06),
+            max(0.55, 1.0 - n_adj * 0.14),
+            max(0.45, 1.0 - n_adj * 0.20 - pressure * 0.15),
         ]
-        raw_w = [max(0.08, w) for w in raw_w]
-        total_w = sum(raw_w)
-        weights = [w / total_w for w in raw_w]
+        fallback_base = [
+            0.28,
+            max(0.18, 0.26 - n_adj * 0.015),
+            max(0.15, 0.25 - n_adj * 0.035),
+            max(0.12, 0.21 - n_adj * 0.05 - pressure * 0.04),
+        ]
 
-        def _split(projected: float) -> list[float]:
-            # Always show the predicted quarter breakdown — never replace with actual stats.
-            # Actual stats are shown separately in the live_stats column.
-            return [round(projected * w, 1) for w in weights]
+        # Real per-stat quarter weights from DB (pts, ast, reb, fg3m tracked separately).
+        real_stat_weights = get_quarter_weights(projection.player_id)
 
-        pts_q  = _split(proj.points)
-        ast_q  = _split(proj.assists)
-        reb_q  = _split(proj.rebounds)
-        fg3_q  = _split(proj.threes_made)
+        def _weights_for(stat_key: str) -> list[float]:
+            if real_stat_weights and stat_key in real_stat_weights:
+                base = [w * s for w, s in zip(real_stat_weights[stat_key], suppression)]
+            elif real_stat_weights:
+                # Unknown stat — use pts distribution as a proxy
+                base = [w * s for w, s in zip(real_stat_weights["pts"], suppression)]
+            else:
+                base = fallback_base
+
+            raw_w = [
+                base[0] - takeover_shift * 1.5,
+                base[1] - takeover_shift * 0.5,
+                base[2] + takeover_shift * 0.8,
+                base[3] + takeover_shift * 1.2,
+            ]
+            raw_w = [max(0.08, w) for w in raw_w]
+            total = sum(raw_w)
+            return [w / total for w in raw_w]
+
+        def _split(projected: float, stat_key: str) -> list[float]:
+            return [round(projected * w, 1) for w in _weights_for(stat_key)]
+
+        pts_q  = _split(proj.points,      "pts")
+        ast_q  = _split(proj.assists,     "ast")
+        reb_q  = _split(proj.rebounds,    "reb")
+        fg3_q  = _split(proj.threes_made, "fg3m")
 
         quarter_breakdown = [
             PlayerQuarterProjection(quarter="Q1", points=pts_q[0], assists=ast_q[0], rebounds=reb_q[0], threes_made=fg3_q[0]),
