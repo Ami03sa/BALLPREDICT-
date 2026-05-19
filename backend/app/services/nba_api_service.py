@@ -258,8 +258,8 @@ def _build_team_state_from_season_stats(team_raw: dict, score: int, season_playe
     players: list[PlayerGameState] = []
     for p in season_players:
         min_avg = float(p.get("MIN") or 0)
-        # Skip players who barely play — they are DNP candidates and inflate score predictions
-        if min_avg < 5.0:
+        # Skip players who barely play — garbage-time guys inflate score predictions
+        if min_avg < 8.0:
             continue
         fg_pct = float(p.get("FG_PCT") or 0.45)
         three_pct = float(p.get("FG3_PCT") or 0.35)

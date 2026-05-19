@@ -1,7 +1,46 @@
+import sqlite3
+from pathlib import Path
+
 from app.schemas.game import GameSnapshot
 from app.services.insight_service import insight_service
 from app.simulation.prediction_engine import prediction_engine
 from app.simulation.state import GameContext
+
+_DB_PATH = Path(__file__).parent.parent.parent / "data" / "nba_training.db"
+
+# Total player-minutes per team per game (5 players × 48 min).
+_GAME_MINUTES = 240.0
+
+
+def _fetch_avg_minutes(player_ids: list[str]) -> dict[str, float]:
+    """Fetch each player's average minutes over last 10 played games in one query."""
+    if not player_ids or not _DB_PATH.exists():
+        return {pid: 15.0 for pid in player_ids}
+    try:
+        placeholders = ",".join("?" * len(player_ids))
+        conn = sqlite3.connect(str(_DB_PATH))
+        rows = conn.execute(
+            f"""
+            SELECT player_id, AVG(min) AS avg_min
+            FROM (
+                SELECT player_id, min,
+                       ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY game_date DESC) AS rn
+                FROM player_game_logs
+                WHERE player_id IN ({placeholders}) AND min > 0
+            ) sub
+            WHERE rn <= 10
+            GROUP BY player_id
+            """,
+            player_ids,
+        ).fetchall()
+        conn.close()
+        result = {r[0]: float(r[1]) for r in rows}
+        for pid in player_ids:
+            if pid not in result:
+                result[pid] = 15.0
+        return result
+    except Exception:
+        return {pid: 15.0 for pid in player_ids}
 
 
 class ProjectionService:
@@ -12,8 +51,6 @@ class ProjectionService:
         status: str = "live",
         possession_feed: list[dict] | None = None,
     ) -> GameSnapshot:
-        # Project players first so we can sum their XGBoost point projections
-        # and use that sum as the authoritative team final-score prediction.
         home_player_projections = [
             prediction_engine.project_player(context, context.home_team, context.away_team, player)
             for player in context.home_team.players
@@ -23,14 +60,45 @@ class ProjectionService:
             for player in context.away_team.players
         ]
 
-        # Sum all active players — XGBoost already encodes each player's typical minutes
-        # in its rolling features, so low-minute bench players naturally project low.
-        def _team_pts_sum(projections: list) -> int:
-            active = [p for p in projections if p.availability_status != "dnp"]
-            return round(sum(p.projected_stats.mean.points for p in active))
+        # One DB round-trip to get avg minutes for all active players.
+        all_active_ids = [
+            p.player_id for p in home_player_projections + away_player_projections
+            if p.availability_status != "dnp"
+        ]
+        avg_min = _fetch_avg_minutes(all_active_ids)
 
-        home_pts_sum = _team_pts_sum(home_player_projections)
-        away_pts_sum = _team_pts_sum(away_player_projections)
+        def _team_pts_sum(projections: list, off_rating: float, pace: float) -> int:
+            active = [p for p in projections if p.availability_status != "dnp"]
+
+            # --- Player-model estimate ---
+            # Each XGBoost prediction reflects a player's typical per-game output.
+            # But summing 12+ players whose average minutes exceed 240 double-counts
+            # production, so we scale by how much the minute budget is over 240.
+            total_proj_min = sum(avg_min.get(p.player_id, 15.0) for p in active)
+            minute_scale = min(1.0, _GAME_MINUTES / max(1.0, total_proj_min))
+            player_estimate = sum(p.projected_stats.mean.points for p in active) * minute_scale
+
+            # --- Pace-efficiency anchor ---
+            # Expected team pts = (offensive rating / 100) × possessions per game.
+            # This grounds the prediction in the team's actual scoring efficiency
+            # independent of how many players the model includes.
+            pace_estimate = (off_rating * pace) / 100.0
+
+            # Blend: 60% player model, 40% pace anchor.
+            # The player model captures matchup/player-level nuance;
+            # the pace anchor prevents the sum from drifting too far from team baselines.
+            return round(player_estimate * 0.6 + pace_estimate * 0.4)
+
+        home_pts_sum = _team_pts_sum(
+            home_player_projections,
+            context.home_team.offensive_rating,
+            context.home_team.pace,
+        )
+        away_pts_sum = _team_pts_sum(
+            away_player_projections,
+            context.away_team.offensive_rating,
+            context.away_team.pace,
+        )
 
         home_projection = prediction_engine.project_team(
             context, context.home_team, context.away_team, True, player_score_sum=home_pts_sum
