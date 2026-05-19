@@ -160,21 +160,38 @@ def _player_vs_opp(player_id: str, opponent_id: str) -> dict:
             SELECT pts, ast, reb
             FROM player_game_logs
             WHERE player_id = ? AND opponent_abbreviation = ? AND min > 0
-            ORDER BY game_date DESC
-            LIMIT 10
+            ORDER BY game_date DESC LIMIT 10
             """,
             (player_id, opponent_id.upper()),
         ).fetchall()
         conn.close()
         if not rows:
             return {}
-        return {
-            "pts": [r[0] for r in rows],
-            "ast": [r[1] for r in rows],
-            "reb": [r[2] for r in rows],
-        }
+        return {"pts": [r[0] for r in rows], "ast": [r[1] for r in rows], "reb": [r[2] for r in rows]}
     except Exception:
         return {}
+
+
+def _home_away_splits(player_id: str) -> dict:
+    """Career home and away scoring averages."""
+    if not _DB_PATH.exists():
+        return {"home_pts_avg": 0.0, "away_pts_avg": 0.0}
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        rows = conn.execute(
+            "SELECT home_away, AVG(pts) FROM player_game_logs WHERE player_id = ? AND min > 0 GROUP BY home_away",
+            (player_id,),
+        ).fetchall()
+        conn.close()
+        result = {"home_pts_avg": 0.0, "away_pts_avg": 0.0}
+        for r in rows:
+            if r[0] == "H":
+                result["home_pts_avg"] = float(r[1])
+            elif r[0] == "A":
+                result["away_pts_avg"] = float(r[1])
+        return result
+    except Exception:
+        return {"home_pts_avg": 0.0, "away_pts_avg": 0.0}
 
 
 def _build_features(
@@ -183,21 +200,39 @@ def _build_features(
     opp_def: dict,
     is_home: bool,
     h2h: dict | None = None,
+    is_playoffs: bool = False,
+    splits: dict | None = None,
 ) -> dict:
     row: dict[str, float] = {}
+
     for stat in ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov", "min", "fg_pct", "fg3_pct"]:
         vals = history.get(stat, [])
         row[f"{stat}_last5"]      = _rolling(vals, 5)
         row[f"{stat}_last10"]     = _rolling(vals, 10)
         row[f"{stat}_season_avg"] = float(np.mean(vals)) if vals else 0.0
+
+    # Last-3 recent form for key scoring stats
+    for stat in ["pts", "ast", "reb", "fg3m"]:
+        row[f"{stat}_last3"] = _rolling(history.get(stat, []), 3)
+
+    # Minutes consistency — high std = unpredictable role (foul trouble, coach decisions)
+    min_vals = history.get("min", [])
+    row["min_std_last10"] = float(np.std(min_vals)) if len(min_vals) >= 3 else 5.0
+
     row["opp_pts_per_game"] = opp_def.get("opp_pts_per_game", 114.0)
     row["opp_fg_pct"]       = opp_def.get("opp_fg_pct", 0.46)
     row["opp_fg3_pct"]      = opp_def.get("opp_fg3_pct", 0.36)
     row["is_home"]          = float(is_home)
+    row["is_playoffs"]      = float(is_playoffs)
     row["rest_days"]        = _rest_days(player.player_id)
 
-    # Head-to-head history: how this player performs vs this specific opponent.
-    # Falls back to season average when no prior matchup data exists.
+    # Home/away career splits
+    splits = splits or {}
+    season_pts = row["pts_season_avg"]
+    row["home_pts_avg"] = splits.get("home_pts_avg") or season_pts
+    row["away_pts_avg"] = splits.get("away_pts_avg") or season_pts
+
+    # Head-to-head history vs this specific opponent
     h2h = h2h or {}
     for stat in ["pts", "ast", "reb"]:
         vals = h2h.get(stat, [])
@@ -209,20 +244,21 @@ def _build_features(
 
 
 _NOISE_SCALES: dict[str, float] = {
-    # Rolling stats — higher variance in last-5 than last-10
-    "pts_last5": 3.0,   "pts_last10": 1.8,   "pts_season_avg": 1.0,
-    "ast_last5": 1.0,   "ast_last10": 0.6,   "ast_season_avg": 0.3,
-    "reb_last5": 1.5,   "reb_last10": 0.9,   "reb_season_avg": 0.5,
+    # Rolling stats
+    "pts_last5": 3.0,   "pts_last10": 1.8,   "pts_season_avg": 1.0,   "pts_last3": 4.0,
+    "ast_last5": 1.0,   "ast_last10": 0.6,   "ast_season_avg": 0.3,   "ast_last3": 1.5,
+    "reb_last5": 1.5,   "reb_last10": 0.9,   "reb_season_avg": 0.5,   "reb_last3": 2.0,
     "stl_last5": 0.4,   "stl_last10": 0.25,  "stl_season_avg": 0.15,
     "blk_last5": 0.5,   "blk_last10": 0.3,   "blk_season_avg": 0.2,
-    "fg3m_last5": 0.8,  "fg3m_last10": 0.5,  "fg3m_season_avg": 0.3,
+    "fg3m_last5": 0.8,  "fg3m_last10": 0.5,  "fg3m_season_avg": 0.3,  "fg3m_last3": 1.0,
     "tov_last5": 0.5,   "tov_last10": 0.3,   "tov_season_avg": 0.2,
     "min_last5": 2.5,   "min_last10": 1.5,   "min_season_avg": 1.0,
     "fg_pct_last5": 0.030,  "fg_pct_last10": 0.018,  "fg_pct_season_avg": 0.010,
     "fg3_pct_last5": 0.040, "fg3_pct_last10": 0.025, "fg3_pct_season_avg": 0.015,
     "opp_pts_per_game": 2.5, "opp_fg_pct": 0.020, "opp_fg3_pct": 0.025,
     "rest_days": 0.8,
-    # H2H noise — matchup history has small samples so higher variance
+    "min_std_last10": 0.5,
+    "home_pts_avg": 2.0, "away_pts_avg": 2.0,
     "pts_vs_opp_last3": 4.5, "pts_vs_opp_avg": 2.5,
     "ast_vs_opp_last3": 1.5, "ast_vs_opp_avg": 0.8,
     "reb_vs_opp_last3": 2.0, "reb_vs_opp_avg": 1.0,
@@ -231,7 +267,7 @@ _NOISE_SCALES: dict[str, float] = {
 _N_RUNS = 200  # number of perturbed runs per prediction
 
 
-def _xgb_predict(player: PlayerGameState, opponent_id: str, is_home: bool) -> dict[str, dict] | None:
+def _xgb_predict(player: PlayerGameState, opponent_id: str, is_home: bool, is_playoffs: bool = False) -> dict[str, dict] | None:
     """
     Run each XGBoost model _N_RUNS times with perturbed features and return
     the mean and std of predictions. Adding noise to rolling stats and opponent
@@ -242,7 +278,8 @@ def _xgb_predict(player: PlayerGameState, opponent_id: str, is_home: bool) -> di
     history  = _player_history(player.player_id)
     opp_def  = _opponent_def_stats(opponent_id)
     h2h      = _player_vs_opp(player.player_id, opponent_id)
-    feat_row = _build_features(player, history, opp_def, is_home, h2h)
+    splits   = _home_away_splits(player.player_id)
+    feat_row = _build_features(player, history, opp_def, is_home, h2h, is_playoffs, splits)
     feature_cols = _MODELS["_features"]
 
     base_X = np.array([feat_row.get(c, 0.0) for c in feature_cols])
@@ -295,14 +332,13 @@ class PredictionEngine:
             )
 
         adjustments = coaching_engine.build_player_counters(context, offense, defense, player)
-        pressure = min(1.0, player.matchup_difficulty + player.fatigue_index + len(adjustments) * 0.08)
-        is_home  = offense.team_id == context.home_team.team_id
+        pressure     = min(1.0, player.matchup_difficulty + player.fatigue_index + len(adjustments) * 0.08)
+        is_home      = offense.team_id == context.home_team.team_id
+        is_playoffs  = context.playoff_intensity >= 0.65
 
-        # Hot factor: ratio of last-3-game scoring vs last-10-game average.
-        # Nudges the mean projection and significantly widens the ceiling for hot players.
         hot = _hot_factor(player.player_id)
 
-        preds = _xgb_predict(player, defense.team_id, is_home)
+        preds = _xgb_predict(player, defense.team_id, is_home, is_playoffs)
 
         if preds is not None:
             # Use ensemble mean — more robust than a single run.

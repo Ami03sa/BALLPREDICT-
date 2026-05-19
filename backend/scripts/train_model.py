@@ -80,36 +80,41 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
 def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame) -> pd.DataFrame:
     print("Engineering features...")
 
-    # Sort per player chronologically
     logs = logs.sort_values(["player_id", "game_date"]).reset_index(drop=True)
-
-    # Rolling averages: shift(1) so the current game is excluded
-    grp = logs.groupby("player_id")
+    grp  = logs.groupby("player_id")
 
     for stat in ROLL_STATS:
         shifted = grp[stat].shift(1)
-        logs[f"{stat}_last5"]  = (
-            shifted.groupby(logs["player_id"]).transform(lambda x: x.rolling(5, min_periods=1).mean())
-        )
-        logs[f"{stat}_last10"] = (
-            shifted.groupby(logs["player_id"]).transform(lambda x: x.rolling(10, min_periods=1).mean())
-        )
-        # Expanding (season-to-date) average — reset on each new season
-        logs[f"{stat}_season_avg"] = (
-            grp[stat]
-            .transform(lambda x: x.shift(1).expanding().mean())
-        )
+        logs[f"{stat}_last5"]      = shifted.groupby(logs["player_id"]).transform(lambda x: x.rolling(5,  min_periods=1).mean())
+        logs[f"{stat}_last10"]     = shifted.groupby(logs["player_id"]).transform(lambda x: x.rolling(10, min_periods=1).mean())
+        logs[f"{stat}_season_avg"] = grp[stat].transform(lambda x: x.shift(1).expanding().mean())
+
+    # Last-3 recent form for key stats
+    for stat in ["pts", "ast", "reb", "fg3m"]:
+        shifted = grp[stat].shift(1)
+        logs[f"{stat}_last3"] = shifted.groupby(logs["player_id"]).transform(lambda x: x.rolling(3, min_periods=1).mean())
+
+    # Minutes consistency — std of last 10 games
+    logs["min_std_last10"] = (
+        grp["min"].transform(lambda x: x.shift(1).rolling(10, min_periods=3).std()).fillna(5.0)
+    )
 
     # Rest days
     logs["rest_days"] = (
-        grp["game_date"]
-        .transform(lambda x: x.diff().dt.days)
-        .fillna(3)
-        .clip(1, 14)
+        grp["game_date"].transform(lambda x: x.diff().dt.days).fillna(3).clip(1, 14)
     )
 
-    # Home flag
-    logs["is_home"] = (logs["home_away"] == "H").astype(int)
+    # Flags
+    logs["is_home"]     = (logs["home_away"] == "H").astype(int)
+    logs["is_playoffs"] = (logs["season_type"] == "Playoffs").astype(int)
+
+    # Home/away career scoring splits (all games up to but not including current)
+    print("  Computing home/away splits...")
+    for loc, col in [("H", "home_pts_avg"), ("A", "away_pts_avg")]:
+        tmp = logs.copy()
+        tmp["_pts_loc"] = tmp["pts"].where(tmp["home_away"] == loc)
+        tmp[col] = tmp.groupby("player_id")["_pts_loc"].transform(lambda x: x.shift(1).expanding().mean())
+        logs[col] = tmp[col].fillna(logs["pts_season_avg"])
 
     # Join opponent defensive stats
     logs = logs.merge(
@@ -158,7 +163,10 @@ def _feature_cols() -> list[str]:
     cols = []
     for stat in ROLL_STATS:
         cols += [f"{stat}_last5", f"{stat}_last10", f"{stat}_season_avg"]
+    for stat in ["pts", "ast", "reb", "fg3m"]:
+        cols += [f"{stat}_last3"]
     cols += ["opp_pts_per_game", "opp_fg_pct", "opp_fg3_pct", "is_home", "rest_days"]
+    cols += ["is_playoffs", "min_std_last10", "home_pts_avg", "away_pts_avg"]
     for stat in ["pts", "ast", "reb"]:
         cols += [f"{stat}_vs_opp_last3", f"{stat}_vs_opp_avg"]
     return cols
