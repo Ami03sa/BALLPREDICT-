@@ -25,11 +25,9 @@ class ProjectionService:
 
         # Sum all active players — XGBoost already encodes each player's typical minutes
         # in its rolling features, so low-minute bench players naturally project low.
-        # Cap at 140 as a safety net against model inflation.
         def _team_pts_sum(projections: list) -> int:
             active = [p for p in projections if p.availability_status != "dnp"]
-            raw = sum(p.projected_stats.mean.points for p in active)
-            return round(min(140, raw))
+            return round(sum(p.projected_stats.mean.points for p in active))
 
         home_pts_sum = _team_pts_sum(home_player_projections)
         away_pts_sum = _team_pts_sum(away_player_projections)

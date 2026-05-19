@@ -53,14 +53,14 @@ def _hot_factor(player_id: str) -> float:
     try:
         conn = sqlite3.connect(str(_DB_PATH))
         rows = conn.execute(
-            "SELECT pts, min FROM player_game_logs WHERE player_id = ? ORDER BY game_date DESC LIMIT 10",
+            "SELECT pts, min FROM player_game_logs WHERE player_id = ? AND min > 0 ORDER BY game_date DESC LIMIT 10",
             (player_id,),
         ).fetchall()
         conn.close()
     except Exception:
         return 1.0
 
-    # Require 20+ minutes so foul-trouble / injury games don't skew the ratio
+    # Require 20+ minutes so foul-trouble games don't skew the ratio
     played = [(r[0], r[1]) for r in rows if float(r[1] or 0) >= 20]
     if len(played) < 4:
         return 1.0
@@ -80,11 +80,14 @@ def _player_history(player_id: str) -> dict:
         return {}
     try:
         conn = sqlite3.connect(_DB_PATH)
+        # Only include games the player actually played (min > 0).
+        # DNP/missed games have 0 stats and would pull every rolling average down
+        # artificially — skip them and use the real played games immediately before.
         rows = conn.execute(
             """
             SELECT pts, ast, reb, stl, blk, fg3m, tov, min, fg_pct, fg3_pct
             FROM player_game_logs
-            WHERE player_id = ?
+            WHERE player_id = ? AND min > 0
             ORDER BY game_date DESC
             LIMIT 10
             """,
