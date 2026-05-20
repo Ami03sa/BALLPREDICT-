@@ -52,7 +52,39 @@ XGB_PARAMS = dict(
 
 # ── Load data ─────────────────────────────────────────────────────────────────
 
-def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
+def _classify_positions(logs: pd.DataFrame) -> pd.DataFrame:
+    """
+    Assign each player a position archetype (G/F/C) from per-36-minute career stats.
+    Per-36 avoids the low-scorer bias of ratio-to-points metrics.
+
+    Thresholds (per 36 minutes):
+      C: (reb + blk) per 36 > 6.5    ← rim presence / rebounding
+      G: (ast + fg3m) per 36 > 4.5   ← playmaking + perimeter shooting
+      F: everyone else
+    """
+    career = (
+        logs[logs["min"] >= 8]
+        .groupby("player_id")[["reb", "blk", "ast", "fg3m", "min"]]
+        .mean()
+        .reset_index()
+    )
+    # Avoid division by zero for players with very low minutes
+    career["min36"] = career["min"].clip(lower=1)
+    career["big_per36"]   = (career["reb"] + career["blk"])  / career["min36"] * 36
+    career["guard_per36"] = (career["ast"] + career["fg3m"]) / career["min36"] * 36
+
+    def _pos(row):
+        if row["big_per36"] > 6.5:
+            return "C"
+        if row["guard_per36"] > 4.5:
+            return "G"
+        return "F"
+
+    career["position"] = career.apply(_pos, axis=1)
+    return career[["player_id", "position"]]
+
+
+def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     conn = sqlite3.connect(DB_PATH)
 
     logs = pd.read_sql_query("""
@@ -64,23 +96,19 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
         ORDER BY player_id, game_date
     """, conn)
 
-    # Compute full opponent defensive profile directly from player_game_logs.
-    # This gives us per-stat matchup vulnerability (not just pts/fg_pct/fg3_pct).
-    # Group by the team being played against + season + season_type, then average
-    # each stat across all player-game rows — i.e. how much does this team allow
-    # per player-game on average.
+    # Team-level opponent defensive profile (all players combined)
     def_stats = pd.read_sql_query("""
         SELECT opponent_abbreviation AS team_abbreviation,
                season,
                season_type,
-               AVG(pts)   AS opp_pts_per_game,
+               AVG(pts)    AS opp_pts_per_game,
                AVG(fg_pct) AS opp_fg_pct,
                AVG(fg3_pct) AS opp_fg3_pct,
-               AVG(ast)   AS opp_ast_pg,
-               AVG(reb)   AS opp_reb_pg,
-               AVG(fg3m)  AS opp_fg3m_pg,
-               AVG(blk)   AS opp_blk_pg,
-               AVG(stl)   AS opp_stl_pg
+               AVG(ast)    AS opp_ast_pg,
+               AVG(reb)    AS opp_reb_pg,
+               AVG(fg3m)   AS opp_fg3m_pg,
+               AVG(blk)    AS opp_blk_pg,
+               AVG(stl)    AS opp_stl_pg
         FROM player_game_logs
         WHERE min >= 5
         GROUP BY opponent_abbreviation, season, season_type
@@ -88,12 +116,18 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
 
     conn.close()
     logs["game_date"] = pd.to_datetime(logs["game_date"])
-    return logs, def_stats
+
+    # Classify each player into G/F/C by career play style
+    positions = _classify_positions(logs)
+    pos_counts = positions["position"].value_counts().to_dict()
+    print(f"  Position split — G:{pos_counts.get('G',0)}  F:{pos_counts.get('F',0)}  C:{pos_counts.get('C',0)}")
+
+    return logs, def_stats, positions
 
 
 # ── Feature engineering ───────────────────────────────────────────────────────
 
-def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame) -> pd.DataFrame:
+def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame, positions: pd.DataFrame) -> pd.DataFrame:
     print("Engineering features...")
 
     logs = logs.sort_values(["player_id", "game_date"]).reset_index(drop=True)
@@ -147,6 +181,39 @@ def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame) -> pd.DataFrame:
     logs["opp_blk_pg"]       = logs["opp_blk_pg"].fillna(0.55)
     logs["opp_stl_pg"]       = logs["opp_stl_pg"].fillna(0.85)
 
+    # Position-specific matchup vulnerability.
+    # Join player position archetype, then compute per-(opponent, position) defense.
+    # This tells the model: "how many pts does this team allow to GUARDS specifically"
+    # vs the generic team-level average.
+    print("  Computing position-specific matchup features...")
+    logs = logs.merge(positions, on="player_id", how="left")
+    logs["position"] = logs["position"].fillna("F")  # default unknown → forward
+
+    pos_def = (
+        logs[logs["min"] >= 5]
+        .groupby(["opponent_abbreviation", "season", "season_type", "position"])[
+            ["pts", "ast", "reb", "fg3m", "blk", "stl"]
+        ]
+        .mean()
+        .reset_index()
+        .rename(columns={
+            "pts": "opp_pos_pts", "ast": "opp_pos_ast", "reb": "opp_pos_reb",
+            "fg3m": "opp_pos_fg3m", "blk": "opp_pos_blk", "stl": "opp_pos_stl",
+        })
+    )
+    logs = logs.merge(
+        pos_def,
+        on=["opponent_abbreviation", "season", "season_type", "position"],
+        how="left",
+    )
+    # Fall back to team-level average when position bucket has too few games
+    logs["opp_pos_pts"]  = logs["opp_pos_pts"].fillna(logs["opp_pts_per_game"])
+    logs["opp_pos_ast"]  = logs["opp_pos_ast"].fillna(logs["opp_ast_pg"])
+    logs["opp_pos_reb"]  = logs["opp_pos_reb"].fillna(logs["opp_reb_pg"])
+    logs["opp_pos_fg3m"] = logs["opp_pos_fg3m"].fillna(logs["opp_fg3m_pg"])
+    logs["opp_pos_blk"]  = logs["opp_pos_blk"].fillna(logs["opp_blk_pg"])
+    logs["opp_pos_stl"]  = logs["opp_pos_stl"].fillna(logs["opp_stl_pg"])
+
     # Head-to-head history: rolling stats vs each specific opponent.
     # Sort per (player, opponent, date) so shift(1) excludes the current game.
     print("  Computing head-to-head features...")
@@ -185,6 +252,7 @@ def _feature_cols() -> list[str]:
              "opp_ast_pg", "opp_reb_pg", "opp_fg3m_pg", "opp_blk_pg", "opp_stl_pg",
              "is_home", "rest_days"]
     cols += ["is_playoffs", "min_std_last10", "home_pts_avg", "away_pts_avg"]
+    cols += ["opp_pos_pts", "opp_pos_ast", "opp_pos_reb", "opp_pos_fg3m", "opp_pos_blk", "opp_pos_stl"]
     for stat in ["pts", "ast", "reb"]:
         cols += [f"{stat}_vs_opp_last3", f"{stat}_vs_opp_avg"]
     return cols
@@ -251,10 +319,10 @@ def save_models(models: dict, metrics: dict) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    logs, def_stats = load_data()
+    logs, def_stats, positions = load_data()
     print(f"Loaded {len(logs):,} player-game rows")
 
-    df = build_features(logs, def_stats)
+    df = build_features(logs, def_stats, positions)
 
     print("\nTraining XGBoost models...")
     models, metrics = train_models(df)

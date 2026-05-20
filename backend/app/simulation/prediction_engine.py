@@ -125,42 +125,116 @@ def _player_history(player_id: str) -> dict:
     return {c: [r[i] for r in rows] for i, c in enumerate(cols)}
 
 
-def _opponent_def_stats(opponent_id: str) -> dict:
+def _player_position(player_id: str) -> str:
     """
-    Full per-stat matchup vulnerability for the opposing team.
-    Computed from player_game_logs: average stats allowed per player-game
-    against this team over the current/most-recent season.
-    Covers pts, fg_pct, fg3_pct, ast, reb, fg3m, blk, stl —
-    so the model sees whether this opponent leaks threes, allows drives, etc.
+    Classify a player as G/F/C using per-36-minute career stats.
+    Mirrors train_model.py exactly so inference features match training features.
+    """
+    if not _DB_PATH.exists():
+        return "F"
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        row = conn.execute(
+            """
+            SELECT AVG(reb), AVG(blk), AVG(ast), AVG(fg3m), AVG(min)
+            FROM player_game_logs
+            WHERE player_id = ? AND min >= 8
+            """,
+            (player_id,),
+        ).fetchone()
+        conn.close()
+        if not row or row[4] is None or row[4] == 0:
+            return "F"
+        reb, blk, ast, fg3m, avg_min = (float(x or 0) for x in row)
+        min36 = max(avg_min, 1)
+        big_per36   = (reb + blk)  / min36 * 36
+        guard_per36 = (ast + fg3m) / min36 * 36
+        if big_per36 > 6.5:
+            return "C"
+        if guard_per36 > 4.5:
+            return "G"
+        return "F"
+    except Exception:
+        return "F"
+
+
+def _opponent_def_stats(opponent_id: str, position: str = "F") -> dict:
+    """
+    Full per-stat matchup vulnerability for the opposing team, broken down by
+    position archetype (G/F/C). Team-level stats fill in when position bucket
+    has insufficient data.
     """
     defaults = {
         "opp_pts_per_game": 12.0, "opp_fg_pct": 0.46, "opp_fg3_pct": 0.36,
         "opp_ast_pg": 2.8, "opp_reb_pg": 4.6, "opp_fg3m_pg": 1.4,
         "opp_blk_pg": 0.55, "opp_stl_pg": 0.85,
+        "opp_pos_pts": 12.0, "opp_pos_ast": 2.8, "opp_pos_reb": 4.6,
+        "opp_pos_fg3m": 1.4, "opp_pos_blk": 0.55, "opp_pos_stl": 0.85,
     }
     if not _DB_PATH.exists():
         return defaults
     try:
         conn = sqlite3.connect(_DB_PATH)
-        row = conn.execute(
+        season_row = conn.execute("SELECT MAX(season) FROM player_game_logs").fetchone()
+        season = season_row[0] if season_row else "2024-25"
+
+        team_row = conn.execute(
             """
             SELECT AVG(pts), AVG(fg_pct), AVG(fg3_pct),
                    AVG(ast), AVG(reb), AVG(fg3m), AVG(blk), AVG(stl)
             FROM player_game_logs
-            WHERE opponent_abbreviation = ?
-              AND season = (SELECT MAX(season) FROM player_game_logs)
-              AND season_type = 'Regular Season'
-              AND min >= 5
+            WHERE opponent_abbreviation = ? AND season = ?
+              AND season_type = 'Regular Season' AND min >= 5
             """,
-            (opponent_id.upper(),),
+            (opponent_id.upper(), season),
+        ).fetchone()
+
+        result = dict(defaults)
+        if team_row and team_row[0] is not None:
+            result.update({
+                "opp_pts_per_game": team_row[0], "opp_fg_pct": team_row[1],
+                "opp_fg3_pct": team_row[2], "opp_ast_pg": team_row[3],
+                "opp_reb_pg": team_row[4], "opp_fg3m_pg": team_row[5],
+                "opp_blk_pg": team_row[6], "opp_stl_pg": team_row[7],
+            })
+
+        pos_row = conn.execute(
+            """
+            WITH archetypes AS (
+                SELECT player_id,
+                       CASE
+                           WHEN (AVG(reb) + AVG(blk))  / MAX(AVG(min), 1) * 36 > 6.5 THEN 'C'
+                           WHEN (AVG(ast) + AVG(fg3m)) / MAX(AVG(min), 1) * 36 > 4.5 THEN 'G'
+                           ELSE 'F'
+                       END AS pos
+                FROM player_game_logs WHERE min >= 8 GROUP BY player_id
+            )
+            SELECT AVG(l.pts), AVG(l.ast), AVG(l.reb), AVG(l.fg3m), AVG(l.blk), AVG(l.stl)
+            FROM player_game_logs l
+            JOIN archetypes a ON a.player_id = l.player_id
+            WHERE l.opponent_abbreviation = ? AND l.season = ?
+              AND l.season_type = 'Regular Season' AND l.min >= 5 AND a.pos = ?
+            """,
+            (opponent_id.upper(), season, position),
         ).fetchone()
         conn.close()
-        if row and row[0] is not None:
-            return {
-                "opp_pts_per_game": row[0], "opp_fg_pct": row[1], "opp_fg3_pct": row[2],
-                "opp_ast_pg": row[3], "opp_reb_pg": row[4], "opp_fg3m_pg": row[5],
-                "opp_blk_pg": row[6], "opp_stl_pg": row[7],
-            }
+
+        if pos_row and pos_row[0] is not None:
+            result.update({
+                "opp_pos_pts": pos_row[0], "opp_pos_ast": pos_row[1],
+                "opp_pos_reb": pos_row[2], "opp_pos_fg3m": pos_row[3],
+                "opp_pos_blk": pos_row[4], "opp_pos_stl": pos_row[5],
+            })
+        else:
+            result.update({
+                "opp_pos_pts": result["opp_pts_per_game"],
+                "opp_pos_ast": result["opp_ast_pg"],
+                "opp_pos_reb": result["opp_reb_pg"],
+                "opp_pos_fg3m": result["opp_fg3m_pg"],
+                "opp_pos_blk": result["opp_blk_pg"],
+                "opp_pos_stl": result["opp_stl_pg"],
+            })
+        return result
     except Exception:
         pass
     return defaults
@@ -269,6 +343,12 @@ def _build_features(
     row["opp_fg3m_pg"]      = opp_def.get("opp_fg3m_pg", 1.4)
     row["opp_blk_pg"]       = opp_def.get("opp_blk_pg",  0.55)
     row["opp_stl_pg"]       = opp_def.get("opp_stl_pg",  0.85)
+    row["opp_pos_pts"]      = opp_def.get("opp_pos_pts",  12.0)
+    row["opp_pos_ast"]      = opp_def.get("opp_pos_ast",  2.8)
+    row["opp_pos_reb"]      = opp_def.get("opp_pos_reb",  4.6)
+    row["opp_pos_fg3m"]     = opp_def.get("opp_pos_fg3m", 1.4)
+    row["opp_pos_blk"]      = opp_def.get("opp_pos_blk",  0.55)
+    row["opp_pos_stl"]      = opp_def.get("opp_pos_stl",  0.85)
     row["is_home"]          = float(is_home)
     row["is_playoffs"]      = float(is_playoffs)
     row["rest_days"]        = _rest_days(player.player_id)
@@ -304,6 +384,7 @@ _NOISE_SCALES: dict[str, float] = {
     "fg3_pct_last5": 0.040, "fg3_pct_last10": 0.025, "fg3_pct_season_avg": 0.015,
     "opp_pts_per_game": 1.5, "opp_fg_pct": 0.020, "opp_fg3_pct": 0.025,
     "opp_ast_pg": 0.4, "opp_reb_pg": 0.5, "opp_fg3m_pg": 0.15, "opp_blk_pg": 0.08, "opp_stl_pg": 0.10,
+    "opp_pos_pts": 1.5, "opp_pos_ast": 0.4, "opp_pos_reb": 0.5, "opp_pos_fg3m": 0.15, "opp_pos_blk": 0.08, "opp_pos_stl": 0.10,
     "rest_days": 0.8,
     "min_std_last10": 0.5,
     "home_pts_avg": 2.0, "away_pts_avg": 2.0,
@@ -324,7 +405,8 @@ def _xgb_predict(player: PlayerGameState, opponent_id: str, is_home: bool, is_pl
     if _MODELS is None:
         return None
     history  = _player_history(player.player_id)
-    opp_def  = _opponent_def_stats(opponent_id)
+    position = _player_position(player.player_id)
+    opp_def  = _opponent_def_stats(opponent_id, position)
     h2h      = _player_vs_opp(player.player_id, opponent_id)
     splits   = _home_away_splits(player.player_id)
     feat_row = _build_features(player, history, opp_def, is_home, h2h, is_playoffs, splits)
