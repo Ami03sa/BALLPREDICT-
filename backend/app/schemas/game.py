@@ -49,6 +49,8 @@ class PlayerProjection(BaseModel):
     defensive_pressure: float
     hot_factor: float = 1.0
     adjustments: list[CoachingAdjustment]
+    breakout_probability: float = 0.0  # 0-1 probability of scoring 30+
+    breakout_alert: bool = False        # True when elevated ceiling detected
 
 
 class TeamProjection(BaseModel):

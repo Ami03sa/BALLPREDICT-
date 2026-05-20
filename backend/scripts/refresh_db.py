@@ -126,7 +126,7 @@ def _parse_log_row(row: dict) -> dict | None:
         "game_id":               str(row.get("GAME_ID", "")),
         "game_date":             raw_date,
         "season":                season_str,
-        "season_type":           "Playoffs" if "Playoff" in str(row.get("SEASON_ID", "")) or "Playoff" in str(row.get("season_type", "")) else "Regular Season",
+        "season_type":           season_type,
         "home_away":             home_away,
         "min":                   minutes,
         "pts":                   float(row.get("PTS") or 0),

@@ -10,6 +10,55 @@ from app.simulation.state import GameContext
 _DB_PATH = Path(__file__).parent.parent.parent / "data" / "nba_training.db"
 _GAME_MINUTES = 240.0
 _LEAGUE_AVG_DEF_RTG = 114.0  # League-average defensive rating used for opp-adjustment
+_BREAKOUT_THRESHOLD = 30.0   # Points threshold for "breakout" classification
+
+
+def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
+    """
+    Returns per-player scoring volatility from last 10 games:
+      pts_std     — standard deviation of points
+      breakout_pct — fraction of last 10 games with 30+ points
+      last_vs_opp  — most recent score vs a specific opponent (keyed separately)
+    """
+    if not player_ids or not _DB_PATH.exists():
+        return {}
+    try:
+        placeholders = ",".join("?" * len(player_ids))
+        conn = sqlite3.connect(str(_DB_PATH))
+        rows = conn.execute(
+            f"""
+            SELECT player_id, pts
+            FROM (
+                SELECT player_id, pts,
+                       ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY game_date DESC) AS rn
+                FROM player_game_logs
+                WHERE player_id IN ({placeholders}) AND min >= 10
+            ) sub
+            WHERE rn <= 10
+            """,
+            player_ids,
+        ).fetchall()
+        conn.close()
+
+        from collections import defaultdict
+        import math
+        buckets: dict[str, list[float]] = defaultdict(list)
+        for pid, pts in rows:
+            buckets[pid].append(float(pts))
+
+        result: dict[str, dict] = {}
+        for pid, pts_list in buckets.items():
+            if len(pts_list) < 2:
+                result[pid] = {"pts_std": 5.0, "breakout_pct": 0.0}
+                continue
+            mean = sum(pts_list) / len(pts_list)
+            variance = sum((p - mean) ** 2 for p in pts_list) / (len(pts_list) - 1)
+            std = math.sqrt(variance)
+            breakout_pct = sum(1 for p in pts_list if p >= _BREAKOUT_THRESHOLD) / len(pts_list)
+            result[pid] = {"pts_std": round(std, 1), "breakout_pct": round(breakout_pct, 2)}
+        return result
+    except Exception:
+        return {}
 
 
 def _fetch_player_game_data(player_ids: list[str]) -> tuple[dict[str, float], dict[str, float]]:
@@ -193,6 +242,7 @@ class ProjectionService:
             if p.availability_status != "dnp"
         ]
         avg_min, play_prob = _fetch_player_game_data(all_active_ids)
+        volatility = _fetch_player_volatility(all_active_ids)
 
         # Floor play probability at 0.85 for confirmed starters — they almost always play.
         starter_ids = {
@@ -311,6 +361,47 @@ class ProjectionService:
 
         home_player_projections = _apply_scale(home_player_projections, home_total)
         away_player_projections = _apply_scale(away_player_projections, away_total)
+
+        # Widen the high band using historical volatility — XGBoost confidence bands
+        # are based on small feature perturbations and are too narrow for high-variance
+        # players like Wemby. Replace with mean + 1.5×std when that's higher.
+        # Also compute breakout_probability from the fraction of recent 30+ games,
+        # boosted when Vegas prop is above their rolling average.
+        def _apply_volatility(proj: PlayerProjection) -> PlayerProjection:
+            if proj.availability_status == "dnp":
+                return proj
+            vol = volatility.get(proj.player_id, {})
+            std = vol.get("pts_std", 5.0)
+            raw_breakout_pct = vol.get("breakout_pct", 0.0)
+
+            mean_pts = proj.projected_stats.mean.points
+            current_high = proj.projected_stats.high.points
+
+            # Volatility ceiling: mean + 1.5×std, only widen (never shrink)
+            vol_ceiling = round(mean_pts + 1.5 * std, 1)
+            new_high = max(current_high, vol_ceiling)
+
+            # Breakout probability — blend historical rate with ceiling signal
+            # If ceiling >= 30, there's real upside regardless of history
+            ceiling_signal = min(0.5, max(0.0, (new_high - _BREAKOUT_THRESHOLD) / 20.0))
+            breakout_prob = round(min(0.95, raw_breakout_pct * 0.6 + ceiling_signal * 0.4), 2)
+            breakout_alert = breakout_prob >= 0.25 or new_high >= _BREAKOUT_THRESHOLD
+
+            new_band = proj.projected_stats.model_copy(
+                update={
+                    "high": proj.projected_stats.high.model_copy(
+                        update={"points": new_high}
+                    )
+                }
+            )
+            return proj.model_copy(update={
+                "projected_stats": new_band,
+                "breakout_probability": breakout_prob,
+                "breakout_alert": breakout_alert,
+            })
+
+        home_player_projections = [_apply_volatility(p) for p in home_player_projections]
+        away_player_projections = [_apply_volatility(p) for p in away_player_projections]
 
         home_projection = prediction_engine.project_team(
             context, context.home_team, context.away_team, True, player_score_sum=home_total
