@@ -159,6 +159,18 @@ export async function fetchPlayerDetail(gameId: string, playerId: string): Promi
     teamName: data.team_name,
     opponentTeamName: data.opponent_team_name,
     coachCounterSummary: data.coach_counter_summary,
+    breakoutStats: data.projection.breakout_stats
+      ? {
+          ceilingPts: data.projection.breakout_stats.ceiling_pts,
+          ceilingAst: data.projection.breakout_stats.ceiling_ast,
+          ceilingReb: data.projection.breakout_stats.ceiling_reb,
+          ceilingFg3m: data.projection.breakout_stats.ceiling_fg3m,
+          ceilingStl: data.projection.breakout_stats.ceiling_stl,
+          ceilingBlk: data.projection.breakout_stats.ceiling_blk,
+          breakoutProbability: data.projection.breakout_stats.breakout_probability,
+          breakoutAlert: data.projection.breakout_stats.breakout_alert,
+        }
+      : null,
     projection: {
       playerId: data.projection.player_id,
       playerName: data.projection.player_name,

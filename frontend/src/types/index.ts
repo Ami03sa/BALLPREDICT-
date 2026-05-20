@@ -134,6 +134,17 @@ export type GamePreview = {
   predictionSummary: string;
 };
 
+export type BreakoutStats = {
+  ceilingPts: number;
+  ceilingAst: number;
+  ceilingReb: number;
+  ceilingFg3m: number;
+  ceilingStl: number;
+  ceilingBlk: number;
+  breakoutProbability: number;
+  breakoutAlert: boolean;
+};
+
 export type PlayerDetail = {
   gameId: string;
   playerId: string;
@@ -142,6 +153,7 @@ export type PlayerDetail = {
   teamName: string;
   opponentTeamName: string;
   coachCounterSummary: string;
+  breakoutStats: BreakoutStats | null;
   projection: PlayerProjection;
   quarterBreakdown: {
     quarter: string;

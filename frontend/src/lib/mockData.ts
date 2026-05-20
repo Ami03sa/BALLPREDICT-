@@ -444,6 +444,7 @@ export const mockPlayerDetail: PlayerDetail = {
   teamName: "Los Angeles Lakers",
   opponentTeamName: "Golden State Warriors",
   coachCounterSummary: "Live data unavailable — start the backend server to load projections.",
+  breakoutStats: null,
   projection: mockSnapshot.playerProjections[0],
   quarterBreakdown: [
     { quarter: "Q1", points: 0, assists: 0, rebounds: 0, threesMade: 0 },

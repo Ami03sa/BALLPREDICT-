@@ -12,7 +12,7 @@ import {
 import { useEffect, useState } from "react";
 import { InsightPanel } from "../components/InsightPanel";
 import { fetchPlayerDetail } from "../lib/api";
-import type { PlayerDetail } from "../types";
+import type { BreakoutStats, PlayerDetail } from "../types";
 
 function DetailStatCard({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
   return (
@@ -20,6 +20,44 @@ function DetailStatCard({ label, value, accent }: { label: string; value: string
       <p className="text-xs uppercase tracking-[0.25em] text-muted">{label}</p>
       <p className={`mt-2 font-display text-3xl ${accent ? "text-electric" : "text-white"}`}>{value}</p>
     </div>
+  );
+}
+
+function BreakoutPanel({ stats }: { stats: BreakoutStats }) {
+  const pct = Math.round(stats.breakoutProbability * 100);
+  const alert = stats.breakoutAlert;
+  return (
+    <section className={`panel p-6 ${alert ? "border border-orange-400/40 bg-orange-400/5" : ""}`}>
+      <div className="mb-4 flex items-center justify-between">
+        <div className="flex items-center gap-3">
+          <h2 className="panel-title">Breakout Upside</h2>
+          {alert && (
+            <span className="rounded-full bg-orange-400/20 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-orange-300">
+              Alert
+            </span>
+          )}
+        </div>
+        <div className="text-right">
+          <p className="text-xs uppercase tracking-[0.25em] text-muted">30+ pt probability</p>
+          <p className={`font-display text-3xl ${alert ? "text-orange-300" : "text-white"}`}>{pct}%</p>
+        </div>
+      </div>
+      <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
+        {[
+          { label: "Pts Ceiling", value: stats.ceilingPts },
+          { label: "Ast Ceiling", value: stats.ceilingAst },
+          { label: "Reb Ceiling", value: stats.ceilingReb },
+          { label: "3PM Ceiling", value: stats.ceilingFg3m },
+          { label: "Stl Ceiling", value: stats.ceilingStl },
+          { label: "Blk Ceiling", value: stats.ceilingBlk },
+        ].map(({ label, value }) => (
+          <div key={label} className="rounded-2xl border border-white/8 bg-white/3 px-4 py-3">
+            <p className="text-xs uppercase tracking-[0.2em] text-muted">{label}</p>
+            <p className="mt-1 font-display text-2xl text-white">{value.toFixed(1)}</p>
+          </div>
+        ))}
+      </div>
+    </section>
   );
 }
 
@@ -136,6 +174,8 @@ export function PlayerDetailPage({
             <DetailStatCard label="Ceiling" value={detail.confidence.ceilingPoints.toFixed(1)} />
           </div>
         </section>
+
+        {detail.breakoutStats && <BreakoutPanel stats={detail.breakoutStats} />}
 
         <div className="grid gap-6 xl:grid-cols-[1.2fr_0.8fr]">
           <section className="panel p-6">
