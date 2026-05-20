@@ -64,10 +64,26 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame]:
         ORDER BY player_id, game_date
     """, conn)
 
+    # Compute full opponent defensive profile directly from player_game_logs.
+    # This gives us per-stat matchup vulnerability (not just pts/fg_pct/fg3_pct).
+    # Group by the team being played against + season + season_type, then average
+    # each stat across all player-game rows — i.e. how much does this team allow
+    # per player-game on average.
     def_stats = pd.read_sql_query("""
-        SELECT team_abbreviation, season, season_type,
-               opp_pts_per_game, opp_fg_pct, opp_fg3_pct
-        FROM team_defensive_stats
+        SELECT opponent_abbreviation AS team_abbreviation,
+               season,
+               season_type,
+               AVG(pts)   AS opp_pts_per_game,
+               AVG(fg_pct) AS opp_fg_pct,
+               AVG(fg3_pct) AS opp_fg3_pct,
+               AVG(ast)   AS opp_ast_pg,
+               AVG(reb)   AS opp_reb_pg,
+               AVG(fg3m)  AS opp_fg3m_pg,
+               AVG(blk)   AS opp_blk_pg,
+               AVG(stl)   AS opp_stl_pg
+        FROM player_game_logs
+        WHERE min >= 5
+        GROUP BY opponent_abbreviation, season, season_type
     """, conn)
 
     conn.close()
@@ -116,20 +132,20 @@ def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame) -> pd.DataFrame:
         tmp[col] = tmp.groupby("player_id")["_pts_loc"].transform(lambda x: x.shift(1).expanding().mean())
         logs[col] = tmp[col].fillna(logs["pts_season_avg"])
 
-    # Join opponent defensive stats
+    # Join opponent defensive stats (all per-player-game averages allowed)
     logs = logs.merge(
-        def_stats.rename(columns={
-            "team_abbreviation": "opponent_abbreviation",
-            "opp_pts_per_game": "opp_pts_per_game",
-            "opp_fg_pct":       "opp_fg_pct",
-            "opp_fg3_pct":      "opp_fg3_pct",
-        }),
+        def_stats.rename(columns={"team_abbreviation": "opponent_abbreviation"}),
         on=["opponent_abbreviation", "season", "season_type"],
         how="left",
     )
-    logs["opp_pts_per_game"] = logs["opp_pts_per_game"].fillna(114.0)
+    logs["opp_pts_per_game"] = logs["opp_pts_per_game"].fillna(12.0)
     logs["opp_fg_pct"]       = logs["opp_fg_pct"].fillna(0.46)
     logs["opp_fg3_pct"]      = logs["opp_fg3_pct"].fillna(0.36)
+    logs["opp_ast_pg"]       = logs["opp_ast_pg"].fillna(2.8)
+    logs["opp_reb_pg"]       = logs["opp_reb_pg"].fillna(4.6)
+    logs["opp_fg3m_pg"]      = logs["opp_fg3m_pg"].fillna(1.4)
+    logs["opp_blk_pg"]       = logs["opp_blk_pg"].fillna(0.55)
+    logs["opp_stl_pg"]       = logs["opp_stl_pg"].fillna(0.85)
 
     # Head-to-head history: rolling stats vs each specific opponent.
     # Sort per (player, opponent, date) so shift(1) excludes the current game.
@@ -165,7 +181,9 @@ def _feature_cols() -> list[str]:
         cols += [f"{stat}_last5", f"{stat}_last10", f"{stat}_season_avg"]
     for stat in ["pts", "ast", "reb", "fg3m"]:
         cols += [f"{stat}_last3"]
-    cols += ["opp_pts_per_game", "opp_fg_pct", "opp_fg3_pct", "is_home", "rest_days"]
+    cols += ["opp_pts_per_game", "opp_fg_pct", "opp_fg3_pct",
+             "opp_ast_pg", "opp_reb_pg", "opp_fg3m_pg", "opp_blk_pg", "opp_stl_pg",
+             "is_home", "rest_days"]
     cols += ["is_playoffs", "min_std_last10", "home_pts_avg", "away_pts_avg"]
     for stat in ["pts", "ast", "reb"]:
         cols += [f"{stat}_vs_opp_last3", f"{stat}_vs_opp_avg"]

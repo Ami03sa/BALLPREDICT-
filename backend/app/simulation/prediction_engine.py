@@ -126,22 +126,41 @@ def _player_history(player_id: str) -> dict:
 
 
 def _opponent_def_stats(opponent_id: str) -> dict:
-    defaults = {"opp_pts_per_game": 114.0, "opp_fg_pct": 0.46, "opp_fg3_pct": 0.36}
+    """
+    Full per-stat matchup vulnerability for the opposing team.
+    Computed from player_game_logs: average stats allowed per player-game
+    against this team over the current/most-recent season.
+    Covers pts, fg_pct, fg3_pct, ast, reb, fg3m, blk, stl —
+    so the model sees whether this opponent leaks threes, allows drives, etc.
+    """
+    defaults = {
+        "opp_pts_per_game": 12.0, "opp_fg_pct": 0.46, "opp_fg3_pct": 0.36,
+        "opp_ast_pg": 2.8, "opp_reb_pg": 4.6, "opp_fg3m_pg": 1.4,
+        "opp_blk_pg": 0.55, "opp_stl_pg": 0.85,
+    }
     if not _DB_PATH.exists():
         return defaults
     try:
         conn = sqlite3.connect(_DB_PATH)
         row = conn.execute(
             """
-            SELECT opp_pts_per_game, opp_fg_pct, opp_fg3_pct
-            FROM team_defensive_stats
-            WHERE team_abbreviation = ? AND season = '2024-25' AND season_type = 'Regular Season'
+            SELECT AVG(pts), AVG(fg_pct), AVG(fg3_pct),
+                   AVG(ast), AVG(reb), AVG(fg3m), AVG(blk), AVG(stl)
+            FROM player_game_logs
+            WHERE opponent_abbreviation = ?
+              AND season = (SELECT MAX(season) FROM player_game_logs)
+              AND season_type = 'Regular Season'
+              AND min >= 5
             """,
             (opponent_id.upper(),),
         ).fetchone()
         conn.close()
-        if row:
-            return {"opp_pts_per_game": row[0], "opp_fg_pct": row[1], "opp_fg3_pct": row[2]}
+        if row and row[0] is not None:
+            return {
+                "opp_pts_per_game": row[0], "opp_fg_pct": row[1], "opp_fg3_pct": row[2],
+                "opp_ast_pg": row[3], "opp_reb_pg": row[4], "opp_fg3m_pg": row[5],
+                "opp_blk_pg": row[6], "opp_stl_pg": row[7],
+            }
     except Exception:
         pass
     return defaults
@@ -242,9 +261,14 @@ def _build_features(
     min_vals = history.get("min", [])
     row["min_std_last10"] = float(np.std(min_vals)) if len(min_vals) >= 3 else 5.0
 
-    row["opp_pts_per_game"] = opp_def.get("opp_pts_per_game", 114.0)
+    row["opp_pts_per_game"] = opp_def.get("opp_pts_per_game", 12.0)
     row["opp_fg_pct"]       = opp_def.get("opp_fg_pct", 0.46)
     row["opp_fg3_pct"]      = opp_def.get("opp_fg3_pct", 0.36)
+    row["opp_ast_pg"]       = opp_def.get("opp_ast_pg",  2.8)
+    row["opp_reb_pg"]       = opp_def.get("opp_reb_pg",  4.6)
+    row["opp_fg3m_pg"]      = opp_def.get("opp_fg3m_pg", 1.4)
+    row["opp_blk_pg"]       = opp_def.get("opp_blk_pg",  0.55)
+    row["opp_stl_pg"]       = opp_def.get("opp_stl_pg",  0.85)
     row["is_home"]          = float(is_home)
     row["is_playoffs"]      = float(is_playoffs)
     row["rest_days"]        = _rest_days(player.player_id)
@@ -278,7 +302,8 @@ _NOISE_SCALES: dict[str, float] = {
     "min_last5": 2.5,   "min_last10": 1.5,   "min_season_avg": 1.0,
     "fg_pct_last5": 0.030,  "fg_pct_last10": 0.018,  "fg_pct_season_avg": 0.010,
     "fg3_pct_last5": 0.040, "fg3_pct_last10": 0.025, "fg3_pct_season_avg": 0.015,
-    "opp_pts_per_game": 2.5, "opp_fg_pct": 0.020, "opp_fg3_pct": 0.025,
+    "opp_pts_per_game": 1.5, "opp_fg_pct": 0.020, "opp_fg3_pct": 0.025,
+    "opp_ast_pg": 0.4, "opp_reb_pg": 0.5, "opp_fg3m_pg": 0.15, "opp_blk_pg": 0.08, "opp_stl_pg": 0.10,
     "rest_days": 0.8,
     "min_std_last10": 0.5,
     "home_pts_avg": 2.0, "away_pts_avg": 2.0,
