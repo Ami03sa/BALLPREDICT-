@@ -15,8 +15,8 @@ _BREAKOUT_THRESHOLD = 30.0   # Points threshold for "breakout" classification
 
 def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
     """
-    Returns per-player volatility for all tracked stats from last 10 qualifying games.
-    Keys per player: pts_std, ast_std, reb_std, fg3m_std, stl_std, blk_std, breakout_pct
+    Returns per-player volatility from last 30 qualifying games, weighted toward recency.
+    Keys: pts_std, ast_std, reb_std, fg3m_std, stl_std, blk_std, breakout_pct, weighted_mean_pts
     """
     if not player_ids or not _DB_PATH.exists():
         return {}
@@ -28,14 +28,14 @@ def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
         conn = sqlite3.connect(str(_DB_PATH))
         rows = conn.execute(
             f"""
-            SELECT player_id, pts, ast, reb, fg3m, stl, blk
+            SELECT player_id, pts, ast, reb, fg3m, stl, blk, rn
             FROM (
                 SELECT player_id, pts, ast, reb, fg3m, stl, blk,
                        ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY game_date DESC) AS rn
                 FROM player_game_logs
                 WHERE player_id IN ({placeholders}) AND min >= 10
             ) sub
-            WHERE rn <= 10
+            WHERE rn <= 30
             """,
             player_ids,
         ).fetchall()
@@ -43,7 +43,7 @@ def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
 
         buckets: dict[str, list] = defaultdict(list)
         for row in rows:
-            buckets[row[0]].append(row[1:])  # (pts, ast, reb, fg3m, stl, blk)
+            buckets[row[0]].append(row[1:])  # (pts, ast, reb, fg3m, stl, blk, rn)
 
         def _std(vals: list[float]) -> float:
             if len(vals) < 2:
@@ -51,20 +51,33 @@ def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
             m = sum(vals) / len(vals)
             return math.sqrt(sum((v - m) ** 2 for v in vals) / (len(vals) - 1))
 
+        def _weighted_mean(vals_with_rn: list[tuple]) -> float:
+            # Exponential decay: most recent game (rn=1) has highest weight
+            total_w, total_v = 0.0, 0.0
+            for val, rn in vals_with_rn:
+                w = 0.95 ** (rn - 1)
+                total_w += w
+                total_v += w * float(val)
+            return total_v / total_w if total_w > 0 else 0.0
+
         result: dict[str, dict] = {}
         for pid, games in buckets.items():
-            cols = list(zip(*games))  # transpose to per-stat lists
+            cols = list(zip(*games))  # (pts, ast, reb, fg3m, stl, blk, rn)
+            rn_list = [int(v) for v in cols[6]]
             pts_list = [float(v) for v in cols[0]]
+            pts_rn = list(zip(pts_list, rn_list))
+
             result[pid] = {
-                "pts_std":  round(_std(pts_list), 1),
-                "ast_std":  round(_std([float(v) for v in cols[1]]), 1),
-                "reb_std":  round(_std([float(v) for v in cols[2]]), 1),
-                "fg3m_std": round(_std([float(v) for v in cols[3]]), 1),
-                "stl_std":  round(_std([float(v) for v in cols[4]]), 1),
-                "blk_std":  round(_std([float(v) for v in cols[5]]), 1),
-                "breakout_pct": round(
-                    sum(1 for p in pts_list if p >= _BREAKOUT_THRESHOLD) / len(pts_list), 2
+                "pts_std":       round(_std(pts_list), 1),
+                "ast_std":       round(_std([float(v) for v in cols[1]]), 1),
+                "reb_std":       round(_std([float(v) for v in cols[2]]), 1),
+                "fg3m_std":      round(_std([float(v) for v in cols[3]]), 1),
+                "stl_std":       round(_std([float(v) for v in cols[4]]), 1),
+                "blk_std":       round(_std([float(v) for v in cols[5]]), 1),
+                "breakout_pct":  round(
+                    sum(1 for p in pts_list if p >= _BREAKOUT_THRESHOLD) / len(pts_list), 3
                 ),
+                "weighted_mean_pts": round(_weighted_mean(pts_rn), 1),
             }
         return result
     except Exception:
@@ -375,15 +388,35 @@ class ProjectionService:
         # Compute breakout_stats as a SEPARATE column — projected_stats (XGBoost
         # floor/mean/ceiling) is left completely untouched. Volatility ceilings live
         # exclusively in breakout_stats so both can be shown side by side.
-        def _apply_volatility(proj: PlayerProjection) -> PlayerProjection:
+        #
+        # Breakout probability formula:
+        #   1. raw_breakout_pct — fraction of last 30 games with 30+ pts (sample base)
+        #   2. opp_factor — scales raw rate by how weak/strong the opponent defense is
+        #      vs league average (weak D → higher probability, elite D → lower)
+        #   3. ceiling_signal — how far the volatility ceiling is above 30 pts (0→0.5)
+        #   4. playoff_mult — stars elevate in playoffs; applies 15% boost if applicable
+        #   Final: clamp(opp_adj_rate × 0.55 + ceiling_signal × 0.45, 0, 0.95) × playoff_mult
+        is_playoffs = context.playoff_intensity >= 0.65
+        playoff_mult = 1.15 if is_playoffs else 1.0
+
+        def _apply_volatility(
+            proj: PlayerProjection,
+            opp_def_rtg: float,
+        ) -> PlayerProjection:
             if proj.availability_status == "dnp":
                 return proj
             vol = volatility.get(proj.player_id, {})
             raw_breakout_pct = vol.get("breakout_pct", 0.0)
 
+            # Opponent adjustment: weaker defense → higher breakout odds.
+            # opp_factor > 1 when opp is worse than league avg, < 1 when elite.
+            opp_factor = min(1.4, max(0.6, opp_def_rtg / _LEAGUE_AVG_DEF_RTG))
+            adj_breakout_pct = min(1.0, raw_breakout_pct * opp_factor)
+
+            # Ceiling = max(xgb_high, mean + 2.0×std) — 97th percentile of their range.
             def _ceil(mean_val: float, xgb_high: float, std_key: str) -> float:
                 std = vol.get(std_key, 2.0)
-                return round(max(xgb_high, mean_val + 1.5 * std), 1)
+                return round(max(xgb_high, mean_val + 2.0 * std), 1)
 
             m = proj.projected_stats.mean
             h = proj.projected_stats.high
@@ -396,8 +429,9 @@ class ProjectionService:
             ceil_blk  = _ceil(m.blocks,      h.blocks,      "blk_std")
 
             ceiling_signal = min(0.5, max(0.0, (ceil_pts - _BREAKOUT_THRESHOLD) / 20.0))
-            breakout_prob  = round(min(0.95, raw_breakout_pct * 0.6 + ceiling_signal * 0.4), 2)
-            breakout_alert = breakout_prob >= 0.25 or ceil_pts >= _BREAKOUT_THRESHOLD
+            raw_prob = adj_breakout_pct * 0.55 + ceiling_signal * 0.45
+            breakout_prob = round(min(0.95, raw_prob * playoff_mult), 2)
+            breakout_alert = breakout_prob >= 0.20 or ceil_pts >= _BREAKOUT_THRESHOLD
 
             return proj.model_copy(update={
                 "breakout_stats": BreakoutStats(
@@ -414,8 +448,14 @@ class ProjectionService:
                 "breakout_alert": breakout_alert,
             })
 
-        home_player_projections = [_apply_volatility(p) for p in home_player_projections]
-        away_player_projections = [_apply_volatility(p) for p in away_player_projections]
+        home_player_projections = [
+            _apply_volatility(p, context.away_team.defensive_rating)
+            for p in home_player_projections
+        ]
+        away_player_projections = [
+            _apply_volatility(p, context.home_team.defensive_rating)
+            for p in away_player_projections
+        ]
 
         # Breakout boost: when a star has elevated breakout probability, nudge the
         # team total up slightly. Only applied when Vegas is present — Vegas acts as
