@@ -213,12 +213,19 @@ def _build_player_state(player_data: dict, team_id: str) -> PlayerGameState | No
     )
 
 
-def _build_team_state(box_team: dict, score: int) -> TeamGameState:
+def _team_ratings(tricode: str, ratings: dict[str, dict]) -> tuple[float, float, float]:
+    """Return (off_rating, def_rating, pace) for a team, with league-average fallbacks."""
+    r = ratings.get(tricode, {})
+    return r.get("off_rating", 114.0), r.get("def_rating", 114.0), r.get("pace", 98.0)
+
+
+def _build_team_state(box_team: dict, score: int, ratings: dict[str, dict] | None = None) -> TeamGameState:
     tricode = box_team.get("teamTricode", "UNK")
     team_id = tricode.lower()
     city = box_team.get("teamCity", "")
     name = box_team.get("teamName", "")
     team_name = TEAM_FULL_NAMES.get(tricode, f"{city} {name}".strip())
+    off_rating, def_rating, pace = _team_ratings(tricode, ratings or {})
 
     players: list[PlayerGameState] = []
     for p in box_team.get("players", []):
@@ -233,9 +240,9 @@ def _build_team_state(box_team: dict, score: int) -> TeamGameState:
         team_name=team_name,
         coach_name="Head Coach",
         score=score,
-        pace=98.0,
-        offensive_rating=114.0,
-        defensive_rating=114.0,
+        pace=pace,
+        offensive_rating=off_rating,
+        defensive_rating=def_rating,
         defensive_rebound_pct=0.73,
         turnover_rate=0.13,
         three_point_rate=0.42,
@@ -247,13 +254,14 @@ def _build_team_state(box_team: dict, score: int) -> TeamGameState:
     )
 
 
-def _build_team_state_from_season_stats(team_raw: dict, score: int, season_players: list[dict]) -> TeamGameState:
+def _build_team_state_from_season_stats(team_raw: dict, score: int, season_players: list[dict], ratings: dict[str, dict] | None = None) -> TeamGameState:
     """Build TeamGameState using per-game season averages as prediction baseline (pre-game)."""
     tricode = team_raw.get("teamTricode", "UNK")
     team_id = tricode.lower()
     city = team_raw.get("teamCity", "")
     name = team_raw.get("teamName", "")
     team_name = TEAM_FULL_NAMES.get(tricode, f"{city} {name}".strip())
+    off_rating, def_rating, pace = _team_ratings(tricode, ratings or {})
 
     players: list[PlayerGameState] = []
     for p in season_players:
@@ -319,9 +327,9 @@ def _build_team_state_from_season_stats(team_raw: dict, score: int, season_playe
         team_name=team_name,
         coach_name="Head Coach",
         score=score,
-        pace=98.0,
-        offensive_rating=114.0,
-        defensive_rating=113.0,
+        pace=pace,
+        offensive_rating=off_rating,
+        defensive_rating=def_rating,
         defensive_rebound_pct=0.73,
         turnover_rate=0.13,
         three_point_rate=0.42,
@@ -333,21 +341,22 @@ def _build_team_state_from_season_stats(team_raw: dict, score: int, season_playe
     )
 
 
-def _build_minimal_team_state(team_raw: dict, score: int) -> TeamGameState:
+def _build_minimal_team_state(team_raw: dict, score: int, ratings: dict[str, dict] | None = None) -> TeamGameState:
     """Build TeamGameState from scoreboard data only (no player-level stats)."""
     tricode = team_raw.get("teamTricode", "UNK")
     team_id = tricode.lower()
     city = team_raw.get("teamCity", "")
     name = team_raw.get("teamName", "")
     team_name = TEAM_FULL_NAMES.get(tricode, f"{city} {name}".strip())
+    off_rating, def_rating, pace = _team_ratings(tricode, ratings or {})
     return TeamGameState(
         team_id=team_id,
         team_name=team_name,
         coach_name="Head Coach",
         score=score,
-        pace=98.0,
-        offensive_rating=114.0,
-        defensive_rating=114.0,
+        pace=pace,
+        offensive_rating=off_rating,
+        defensive_rating=def_rating,
         defensive_rebound_pct=0.73,
         turnover_rate=0.13,
         three_point_rate=0.42,
@@ -380,15 +389,18 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
     from app.core.config import settings
     from app.services.providers.nba_live_client import nba_live_client
 
-    # Fetch injury report and Vegas odds in parallel — both are optional enrichments.
-    injury_report, (vegas_totals, event_ids) = await asyncio.gather(
+    # Fetch injury report, Vegas odds, and real team ratings in parallel.
+    injury_report, (vegas_totals, event_ids), team_ratings = await asyncio.gather(
         nba_live_client.fetch_injury_report(),
         nba_live_client.fetch_vegas_totals(settings.odds_api_key),
+        nba_live_client.fetch_team_ratings(),
     )
     if injury_report:
         logger.info("Injury report loaded: %d players flagged", len(injury_report))
     if vegas_totals:
         logger.info("Vegas totals loaded: %d games", len(vegas_totals))
+    if team_ratings:
+        logger.info("Team ratings loaded: %d teams", len(team_ratings))
 
     # Fetch player props for all games and push into prediction engine.
     if event_ids and settings.odds_api_key:
@@ -449,8 +461,8 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
                 raise ValueError("Boxscore returned no team data (game not yet started)")
             home_score = int(home_box.get("score") or home_score)
             away_score = int(away_box.get("score") or away_score)
-            home_team = _build_team_state(home_box, home_score)
-            away_team = _build_team_state(away_box, away_score)
+            home_team = _build_team_state(home_box, home_score, team_ratings)
+            away_team = _build_team_state(away_box, away_score, team_ratings)
             logger.info("Boxscore loaded for %s — %d players", game_id, len(home_team.players) + len(away_team.players))
         except Exception as exc:
             logger.warning("Boxscore unavailable for %s (%s) — fetching season averages.", game_id, exc)
@@ -461,13 +473,13 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
                     nba_live_client.fetch_player_season_stats(home_team_id),
                     nba_live_client.fetch_player_season_stats(away_team_id),
                 )
-                home_team = _build_team_state_from_season_stats(home_raw, home_score, home_stats)
-                away_team = _build_team_state_from_season_stats(away_raw, away_score, away_stats)
+                home_team = _build_team_state_from_season_stats(home_raw, home_score, home_stats, team_ratings)
+                away_team = _build_team_state_from_season_stats(away_raw, away_score, away_stats, team_ratings)
                 logger.info("Season stats loaded for %s — %d players", game_id, len(home_team.players) + len(away_team.players))
             except Exception as exc2:
                 logger.warning("Season stats also unavailable for %s (%s) — no players.", game_id, exc2)
-                home_team = _build_minimal_team_state(home_raw, home_score)
-                away_team = _build_minimal_team_state(away_raw, away_score)
+                home_team = _build_minimal_team_state(home_raw, home_score, team_ratings)
+                away_team = _build_minimal_team_state(away_raw, away_score, team_ratings)
 
         # Apply official injury report — overrides _recent_dnp for actively listed players
         if injury_report:

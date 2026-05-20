@@ -116,6 +116,44 @@ class NbaLiveClient:
         players.sort(key=lambda p: float(p.get("MIN") or 0), reverse=True)
         return players
 
+    async def fetch_team_ratings(self) -> dict[str, dict[str, float]]:
+        """
+        Fetch real offensive rating and pace for every team from stats.nba.com.
+        Returns {team_tricode: {off_rating, def_rating, pace}} for the current season.
+        Used to replace hardcoded 114.0 / 98.0 defaults in TeamGameState.
+        """
+        try:
+            data = await self._stats_get("leaguedashteamstats", {
+                "Season": self._current_season(),
+                "SeasonType": "Regular Season",
+                "MeasureType": "Advanced",
+                "PerMode": "PerGame",
+                "LeagueID": "00",
+                "DateFrom": "", "DateTo": "", "GameScope": "", "GameSegment": "",
+                "ISTRound": "", "LastNGames": 0, "Location": "", "Month": 0,
+                "OpponentTeamID": 0, "Outcome": "", "PORound": 0,
+                "PaceAdjust": "N", "Period": 0, "PlayerExperience": "",
+                "PlayerPosition": "", "PlusMinus": "N", "Rank": "N",
+                "SeasonSegment": "", "ShotClockRange": "", "StarterBench": "",
+                "TwoWay": 0, "VsConference": "", "VsDivision": "",
+            })
+            rs = next((r for r in data.get("resultSets", []) if r["name"] == "LeagueDashTeamStats"), {})
+            headers = rs.get("headers", [])
+            rows = [dict(zip(headers, row)) for row in rs.get("rowSet", [])]
+            result: dict[str, dict[str, float]] = {}
+            for row in rows:
+                tc = str(row.get("TEAM_ABBREVIATION", ""))
+                if not tc:
+                    continue
+                result[tc] = {
+                    "off_rating": float(row.get("OFF_RATING") or 114.0),
+                    "def_rating": float(row.get("DEF_RATING") or 114.0),
+                    "pace":       float(row.get("PACE")       or 98.0),
+                }
+            return result
+        except Exception:
+            return {}
+
     def _current_season(self) -> str:
         from datetime import date
         d = date.today()
