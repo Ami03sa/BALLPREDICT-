@@ -116,11 +116,24 @@ class NbaLiveClient:
         players.sort(key=lambda p: float(p.get("MIN") or 0), reverse=True)
         return players
 
+    # leaguedashteamstats Advanced returns TEAM_NAME (full name), not TEAM_ABBREVIATION
+    _TEAM_NAME_TO_TRICODE: dict[str, str] = {
+        "Atlanta Hawks": "ATL", "Boston Celtics": "BOS", "Brooklyn Nets": "BKN",
+        "Charlotte Hornets": "CHA", "Chicago Bulls": "CHI", "Cleveland Cavaliers": "CLE",
+        "Dallas Mavericks": "DAL", "Denver Nuggets": "DEN", "Detroit Pistons": "DET",
+        "Golden State Warriors": "GSW", "Houston Rockets": "HOU", "Indiana Pacers": "IND",
+        "LA Clippers": "LAC", "Los Angeles Lakers": "LAL", "Memphis Grizzlies": "MEM",
+        "Miami Heat": "MIA", "Milwaukee Bucks": "MIL", "Minnesota Timberwolves": "MIN",
+        "New Orleans Pelicans": "NOP", "New York Knicks": "NYK", "Oklahoma City Thunder": "OKC",
+        "Orlando Magic": "ORL", "Philadelphia 76ers": "PHI", "Phoenix Suns": "PHX",
+        "Portland Trail Blazers": "POR", "Sacramento Kings": "SAC", "San Antonio Spurs": "SAS",
+        "Toronto Raptors": "TOR", "Utah Jazz": "UTA", "Washington Wizards": "WAS",
+    }
+
     async def fetch_team_ratings(self) -> dict[str, dict[str, float]]:
         """
-        Fetch real offensive rating and pace for every team from stats.nba.com.
+        Fetch real offensive rating, defensive rating, and pace for every team.
         Returns {team_tricode: {off_rating, def_rating, pace}} for the current season.
-        Used to replace hardcoded 114.0 / 98.0 defaults in TeamGameState.
         """
         try:
             data = await self._stats_get("leaguedashteamstats", {
@@ -142,7 +155,9 @@ class NbaLiveClient:
             rows = [dict(zip(headers, row)) for row in rs.get("rowSet", [])]
             result: dict[str, dict[str, float]] = {}
             for row in rows:
-                tc = str(row.get("TEAM_ABBREVIATION", ""))
+                # API returns full team name; map to tricode
+                team_name = str(row.get("TEAM_NAME", ""))
+                tc = self._TEAM_NAME_TO_TRICODE.get(team_name, "")
                 if not tc:
                     continue
                 result[tc] = {
