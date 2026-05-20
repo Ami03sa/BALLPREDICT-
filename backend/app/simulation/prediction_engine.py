@@ -554,14 +554,13 @@ class PredictionEngine:
             proj_tov  = round(preds["tov"]["mean"],  1)
             proj_fg3m = round(preds["fg3m"]["mean"], 1)
 
-            # Blend with prop lines — real market props at 45%, synthetic DB lines
-            # at 30%. Synthetic lines are last5×0.65 + season×0.35, which is close
-            # to how books set lines but less sharp (lower weight accordingly).
+            # Blend with real market props only (45% weight). Synthetic DB lines are
+            # skipped — full-game historical averages misalign with in-game quarter
+            # projections and inflate totals.
             for stat_key, proj_var in [("pts", "proj_pts"), ("reb", "proj_reb"), ("ast", "proj_ast"), ("fg3m", "proj_fg3m")]:
                 prop, is_market = _prop_line(player.player_name, stat_key, player.player_id)
-                if prop is not None and prop > 0:
-                    w = 0.45 if is_market else 0.30
-                    blended = round((1 - w) * locals()[proj_var] + w * prop, 1)
+                if prop is not None and prop > 0 and is_market:
+                    blended = round(0.55 * locals()[proj_var] + 0.45 * prop, 1)
                     if stat_key == "pts":
                         proj_pts = blended
                     elif stat_key == "reb":
