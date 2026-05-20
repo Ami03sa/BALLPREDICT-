@@ -381,7 +381,7 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
     from app.services.providers.nba_live_client import nba_live_client
 
     # Fetch injury report and Vegas odds in parallel — both are optional enrichments.
-    injury_report, vegas_totals = await asyncio.gather(
+    injury_report, (vegas_totals, event_ids) = await asyncio.gather(
         nba_live_client.fetch_injury_report(),
         nba_live_client.fetch_vegas_totals(settings.odds_api_key),
     )
@@ -389,6 +389,14 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
         logger.info("Injury report loaded: %d players flagged", len(injury_report))
     if vegas_totals:
         logger.info("Vegas totals loaded: %d games", len(vegas_totals))
+
+    # Fetch player props for all games and push into prediction engine.
+    if event_ids and settings.odds_api_key:
+        eids = list(event_ids.values())
+        player_props = await nba_live_client.fetch_player_props_bulk(settings.odds_api_key, eids)
+        from app.simulation.prediction_engine import set_player_props
+        set_player_props(player_props)
+        logger.info("Player props loaded: %d players", len(player_props))
 
     scoreboard = await nba_live_client.fetch_scoreboard()
     games = scoreboard.get("scoreboard", {}).get("games", [])

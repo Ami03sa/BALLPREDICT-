@@ -38,6 +38,29 @@ def _load_models() -> dict | None:
 
 _MODELS = _load_models()
 
+# ── Player props cache ────────────────────────────────────────────────────────
+# Populated daily from The Odds API by nba_api_service.
+# Keys are normalized player names (lowercase, letters + spaces only).
+_PLAYER_PROPS: dict[str, dict[str, float]] = {}
+
+
+def set_player_props(props: dict[str, dict[str, float]]) -> None:
+    global _PLAYER_PROPS
+    _PLAYER_PROPS = props
+
+
+def _prop_line(player_name: str, stat: str) -> float | None:
+    """Return the Vegas over/under line for a player/stat, or None if unavailable."""
+    import re
+    norm = re.sub(r"[^a-z ]", "", player_name.lower().strip())
+    # Exact match first, then substring fallback for name variations (Jr., accents, etc.)
+    if norm in _PLAYER_PROPS:
+        return _PLAYER_PROPS[norm].get(stat)
+    for key, vals in _PLAYER_PROPS.items():
+        if key in norm or norm in key:
+            return vals.get(stat)
+    return None
+
 
 def _hot_factor(player_id: str) -> float:
     """
@@ -349,6 +372,24 @@ class PredictionEngine:
             proj_blk  = round(preds["blk"]["mean"],  1)
             proj_tov  = round(preds["tov"]["mean"],  1)
             proj_fg3m = round(preds["fg3m"]["mean"], 1)
+
+            # Blend with Vegas player props when available.
+            # Props are priced by large liquid markets that account for matchup,
+            # rest, rotation changes, and roster news — signals XGBoost doesn't see.
+            # Weight: 55% XGBoost (historical patterns) + 45% props (today's market).
+            _PROP_WEIGHT = 0.45
+            for stat_key, proj_var in [("pts", "proj_pts"), ("reb", "proj_reb"), ("ast", "proj_ast"), ("fg3m", "proj_fg3m")]:
+                prop = _prop_line(player.player_name, stat_key)
+                if prop is not None and prop > 0:
+                    blended = round((1 - _PROP_WEIGHT) * locals()[proj_var] + _PROP_WEIGHT * prop, 1)
+                    if stat_key == "pts":
+                        proj_pts = blended
+                    elif stat_key == "reb":
+                        proj_reb = blended
+                    elif stat_key == "ast":
+                        proj_ast = blended
+                    elif stat_key == "fg3m":
+                        proj_fg3m = blended
 
             # Confidence band driven by prediction std — no manual multipliers needed.
             pts_std = preds["pts"]["std"]

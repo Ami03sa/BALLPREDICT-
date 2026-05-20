@@ -1,8 +1,18 @@
 from __future__ import annotations
 
+import asyncio
+import re
+
 import httpx
 
 from app.core.config import settings
+
+
+def _normalize_name(name: str) -> str:
+    """Lowercase, strip punctuation/accents for fuzzy player name matching."""
+    name = name.lower().strip()
+    name = re.sub(r"[^a-z ]", "", name)
+    return name
 
 _NBA_STATS_URL = "https://stats.nba.com/stats"
 
@@ -235,14 +245,15 @@ class NbaLiveClient:
         except Exception:
             return {}
 
-    async def fetch_vegas_totals(self, api_key: str) -> dict[tuple[str, str], float]:
+    async def fetch_vegas_totals(self, api_key: str) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], str]]:
         """
         Fetch NBA game totals (over/under) from The Odds API.
-        Returns {(home_tricode, away_tricode): total} for matching games.
-        Requires a free API key from https://the-odds-api.com/
+        Returns:
+          totals    – {(home_tc, away_tc): game_total}
+          event_ids – {(home_tc, away_tc): event_id}  (needed for player props)
         """
         if not api_key:
-            return {}
+            return {}, {}
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 r = await client.get(
@@ -252,11 +263,12 @@ class NbaLiveClient:
                 r.raise_for_status()
                 events = r.json()
 
-            # Build reverse lookup: full name → tricode
             from app.services.nba_api_service import TEAM_FULL_NAMES
             name_to_tc = {v.lower(): k for k, v in TEAM_FULL_NAMES.items()}
 
-            result: dict[tuple[str, str], float] = {}
+            totals: dict[tuple[str, str], float] = {}
+            event_ids: dict[tuple[str, str], str] = {}
+
             for event in events:
                 home_name = event.get("home_team", "").lower()
                 away_name = event.get("away_team", "").lower()
@@ -264,20 +276,82 @@ class NbaLiveClient:
                 away_tc = name_to_tc.get(away_name)
                 if not home_tc or not away_tc:
                     continue
+                key = (home_tc, away_tc)
+                event_ids[key] = event.get("id", "")
                 for bm in event.get("bookmakers", []):
                     for market in bm.get("markets", []):
                         if market.get("key") != "totals":
                             continue
                         for outcome in market.get("outcomes", []):
                             if outcome.get("name") == "Over":
-                                result[(home_tc, away_tc)] = float(outcome["point"])
+                                totals[key] = float(outcome["point"])
                                 break
                         break
-                    if (home_tc, away_tc) in result:
+                    if key in totals:
                         break
-            return result
+
+            return totals, event_ids
         except Exception:
+            return {}, {}
+
+    async def fetch_player_props_bulk(
+        self,
+        api_key: str,
+        event_ids: list[str],
+    ) -> dict[str, dict[str, float]]:
+        """
+        Fetch player props (pts/reb/ast/fg3m) for a list of Odds API event IDs.
+        Returns {normalized_player_name: {pts, reb, ast, fg3m}} using the
+        consensus line (first bookmaker that has an Over outcome for each market).
+        Fires all event requests in parallel.
+        """
+        if not api_key or not event_ids:
             return {}
+
+        markets = "player_points,player_rebounds,player_assists,player_threes"
+
+        async def _fetch_event(client: httpx.AsyncClient, event_id: str) -> list[dict]:
+            try:
+                r = await client.get(
+                    f"https://api.the-odds-api.com/v4/sports/basketball_nba/events/{event_id}/odds",
+                    params={"apiKey": api_key, "regions": "us", "markets": markets, "oddsFormat": "american"},
+                )
+                r.raise_for_status()
+                return r.json().get("bookmakers", [])
+            except Exception:
+                return []
+
+        async with httpx.AsyncClient(timeout=15.0) as client:
+            results = await asyncio.gather(*[_fetch_event(client, eid) for eid in event_ids])
+
+        # Market key → our stat key
+        market_map = {
+            "player_points": "pts",
+            "player_rebounds": "reb",
+            "player_assists": "ast",
+            "player_threes": "fg3m",
+        }
+
+        props: dict[str, dict[str, float]] = {}
+        for bookmakers in results:
+            for bm in bookmakers:
+                for market in bm.get("markets", []):
+                    stat_key = market_map.get(market.get("key", ""))
+                    if not stat_key:
+                        continue
+                    for outcome in market.get("outcomes", []):
+                        if outcome.get("name") != "Over":
+                            continue
+                        player_name = outcome.get("description", "").strip()
+                        if not player_name:
+                            continue
+                        norm = _normalize_name(player_name)
+                        if norm not in props:
+                            props[norm] = {}
+                        # Only take the first bookmaker's line per player/stat
+                        if stat_key not in props[norm]:
+                            props[norm][stat_key] = float(outcome.get("point", 0))
+        return props
 
 
 nba_live_client = NbaLiveClient()
