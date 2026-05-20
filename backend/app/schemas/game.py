@@ -34,6 +34,18 @@ class CoachingAdjustment(BaseModel):
     impact: dict[str, float]
 
 
+class BreakoutStats(BaseModel):
+    """Separate upside column — volatility-based ceilings and breakout probability."""
+    ceiling_pts: float
+    ceiling_ast: float
+    ceiling_reb: float
+    ceiling_fg3m: float
+    ceiling_stl: float
+    ceiling_blk: float
+    breakout_probability: float  # 0-1 probability of scoring 30+
+    breakout_alert: bool         # True when elevated ceiling detected
+
+
 class PlayerProjection(BaseModel):
     player_id: str
     player_name: str
@@ -43,14 +55,15 @@ class PlayerProjection(BaseModel):
     availability_status: str = "available"
     dnp_reason: str | None = None
     live_stats: StatLine
-    projected_stats: ConfidenceBand
+    projected_stats: ConfidenceBand   # XGBoost floor / mean / ceiling (unchanged)
+    breakout_stats: BreakoutStats | None = None  # volatility upside column
     momentum_score: float
     fatigue_index: float
     defensive_pressure: float
     hot_factor: float = 1.0
     adjustments: list[CoachingAdjustment]
-    breakout_probability: float = 0.0  # 0-1 probability of scoring 30+
-    breakout_alert: bool = False        # True when elevated ceiling detected
+    breakout_probability: float = 0.0  # kept for backward compat — mirrors breakout_stats
+    breakout_alert: bool = False
 
 
 class TeamProjection(BaseModel):

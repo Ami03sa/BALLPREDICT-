@@ -2,7 +2,7 @@ import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
 
-from app.schemas.game import ConfidenceBand, GameSnapshot, PlayerProjection, StatLine
+from app.schemas.game import BreakoutStats, ConfidenceBand, GameSnapshot, PlayerProjection, StatLine
 from app.services.insight_service import insight_service
 from app.simulation.prediction_engine import prediction_engine
 from app.simulation.state import GameContext
@@ -372,42 +372,44 @@ class ProjectionService:
         home_player_projections = _apply_scale(home_player_projections, home_total)
         away_player_projections = _apply_scale(away_player_projections, away_total)
 
-        # Widen ALL stat high bands using historical volatility — XGBoost bands are
-        # based on small feature perturbations and are too narrow for high-variance
-        # players. Use mean + 1.5×stat_std as the floor for each stat's ceiling.
+        # Compute breakout_stats as a SEPARATE column — projected_stats (XGBoost
+        # floor/mean/ceiling) is left completely untouched. Volatility ceilings live
+        # exclusively in breakout_stats so both can be shown side by side.
         def _apply_volatility(proj: PlayerProjection) -> PlayerProjection:
             if proj.availability_status == "dnp":
                 return proj
             vol = volatility.get(proj.player_id, {})
             raw_breakout_pct = vol.get("breakout_pct", 0.0)
 
-            def _widen(mean_val: float, current_high: float, std_key: str) -> float:
+            def _ceil(mean_val: float, xgb_high: float, std_key: str) -> float:
                 std = vol.get(std_key, 2.0)
-                return round(max(current_high, mean_val + 1.5 * std), 1)
+                return round(max(xgb_high, mean_val + 1.5 * std), 1)
 
             m = proj.projected_stats.mean
             h = proj.projected_stats.high
-            new_high_pts  = _widen(m.points,      h.points,      "pts_std")
-            new_high_ast  = _widen(m.assists,     h.assists,     "ast_std")
-            new_high_reb  = _widen(m.rebounds,    h.rebounds,    "reb_std")
-            new_high_fg3m = _widen(m.threes_made, h.threes_made, "fg3m_std")
-            new_high_stl  = _widen(m.steals,      h.steals,      "stl_std")
-            new_high_blk  = _widen(m.blocks,      h.blocks,      "blk_std")
 
-            ceiling_signal = min(0.5, max(0.0, (new_high_pts - _BREAKOUT_THRESHOLD) / 20.0))
+            ceil_pts  = _ceil(m.points,      h.points,      "pts_std")
+            ceil_ast  = _ceil(m.assists,     h.assists,     "ast_std")
+            ceil_reb  = _ceil(m.rebounds,    h.rebounds,    "reb_std")
+            ceil_fg3m = _ceil(m.threes_made, h.threes_made, "fg3m_std")
+            ceil_stl  = _ceil(m.steals,      h.steals,      "stl_std")
+            ceil_blk  = _ceil(m.blocks,      h.blocks,      "blk_std")
+
+            ceiling_signal = min(0.5, max(0.0, (ceil_pts - _BREAKOUT_THRESHOLD) / 20.0))
             breakout_prob  = round(min(0.95, raw_breakout_pct * 0.6 + ceiling_signal * 0.4), 2)
-            breakout_alert = breakout_prob >= 0.25 or new_high_pts >= _BREAKOUT_THRESHOLD
+            breakout_alert = breakout_prob >= 0.25 or ceil_pts >= _BREAKOUT_THRESHOLD
 
-            new_high_line = h.model_copy(update={
-                "points":      new_high_pts,
-                "assists":     new_high_ast,
-                "rebounds":    new_high_reb,
-                "threes_made": new_high_fg3m,
-                "steals":      new_high_stl,
-                "blocks":      new_high_blk,
-            })
             return proj.model_copy(update={
-                "projected_stats": proj.projected_stats.model_copy(update={"high": new_high_line}),
+                "breakout_stats": BreakoutStats(
+                    ceiling_pts=ceil_pts,
+                    ceiling_ast=ceil_ast,
+                    ceiling_reb=ceil_reb,
+                    ceiling_fg3m=ceil_fg3m,
+                    ceiling_stl=ceil_stl,
+                    ceiling_blk=ceil_blk,
+                    breakout_probability=breakout_prob,
+                    breakout_alert=breakout_alert,
+                ),
                 "breakout_probability": breakout_prob,
                 "breakout_alert": breakout_alert,
             })
