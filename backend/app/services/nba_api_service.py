@@ -411,13 +411,20 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
     else:
         logger.info("Vegas totals loaded: %d games (Odds API)", len(vegas_totals))
 
-    # Fetch player props for all games and push into prediction engine.
+    # Fetch player props and push into prediction engine.
+    # Real market props (Odds API) used at 45% blend weight.
+    # Synthetic DB props (last5×0.65 + season×0.35) used at 30% as automatic fallback.
+    from app.simulation.prediction_engine import set_player_props, _load_synthetic_props
     if event_ids and settings.odds_api_key:
         eids = list(event_ids.values())
         player_props = await nba_live_client.fetch_player_props_bulk(settings.odds_api_key, eids)
-        from app.simulation.prediction_engine import set_player_props
-        set_player_props(player_props)
-        logger.info("Player props loaded: %d players", len(player_props))
+        if player_props:
+            set_player_props(player_props)
+            logger.info("Player props loaded: %d players (market)", len(player_props))
+        else:
+            set_player_props({})
+    else:
+        set_player_props({})
 
     scoreboard = await nba_live_client.fetch_scoreboard()
     games = scoreboard.get("scoreboard", {}).get("games", [])
@@ -525,5 +532,16 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
             home_vegas_total=home_vegas,
             away_vegas_total=away_vegas,
         )
+
+    # Load synthetic props for all players across all games.
+    # These are used at 30% blend weight whenever real market props are unavailable.
+    all_player_ids = [
+        p.player_id
+        for ctx in contexts.values()
+        for p in ctx.home_team.players + ctx.away_team.players
+    ]
+    if all_player_ids:
+        _load_synthetic_props(all_player_ids)
+        logger.info("Synthetic props computed for %d players", len(all_player_ids))
 
     return slate, contexts

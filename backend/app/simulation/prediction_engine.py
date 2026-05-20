@@ -43,23 +43,97 @@ _MODELS = _load_models()
 # Keys are normalized player names (lowercase, letters + spaces only).
 _PLAYER_PROPS: dict[str, dict[str, float]] = {}
 
+# ── Synthetic prop cache ───────────────────────────────────────────────────────
+# Computed from DB rolling averages when market props are unavailable.
+# Keyed by player_id → {pts, reb, ast, fg3m}.
+_SYNTHETIC_PROPS: dict[str, dict[str, float]] = {}
+_DB_PATH_PE = Path(__file__).parent.parent.parent / "data" / "nba_training.db"
+
 
 def set_player_props(props: dict[str, dict[str, float]]) -> None:
     global _PLAYER_PROPS
     _PLAYER_PROPS = props
 
 
-def _prop_line(player_name: str, stat: str) -> float | None:
-    """Return the Vegas over/under line for a player/stat, or None if unavailable."""
+def _load_synthetic_props(player_ids: list[str]) -> None:
+    """
+    Compute synthetic prop lines from DB rolling averages for players without
+    real market props. Line = last5_avg × 0.65 + season_avg × 0.35.
+    Stored in _SYNTHETIC_PROPS keyed by player_id.
+    """
+    global _SYNTHETIC_PROPS
+    if not player_ids or not _DB_PATH_PE.exists():
+        return
+    try:
+        import sqlite3
+        placeholders = ",".join("?" * len(player_ids))
+        conn = sqlite3.connect(str(_DB_PATH_PE))
+        rows = conn.execute(
+            f"""
+            SELECT
+                player_id,
+                AVG(CASE WHEN rn <= 5  THEN pts  END) AS pts_last5,
+                AVG(CASE WHEN rn <= 5  THEN reb  END) AS reb_last5,
+                AVG(CASE WHEN rn <= 5  THEN ast  END) AS ast_last5,
+                AVG(CASE WHEN rn <= 5  THEN fg3m END) AS fg3m_last5,
+                AVG(pts)  AS pts_season,
+                AVG(reb)  AS reb_season,
+                AVG(ast)  AS ast_season,
+                AVG(fg3m) AS fg3m_season
+            FROM (
+                SELECT player_id, pts, reb, ast, fg3m,
+                       ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY game_date DESC) AS rn
+                FROM player_game_logs
+                WHERE player_id IN ({placeholders}) AND min >= 10
+            )
+            GROUP BY player_id
+            """,
+            player_ids,
+        ).fetchall()
+        conn.close()
+        for row in rows:
+            pid = row[0]
+            def _blend(last5, season):
+                if last5 is None and season is None:
+                    return None
+                l = float(last5 or 0)
+                s = float(season or 0)
+                return round(l * 0.65 + s * 0.35, 1)
+            _SYNTHETIC_PROPS[pid] = {
+                "pts":  _blend(row[1], row[5]),
+                "reb":  _blend(row[2], row[6]),
+                "ast":  _blend(row[3], row[7]),
+                "fg3m": _blend(row[4], row[8]),
+            }
+    except Exception:
+        pass
+
+
+def _prop_line(player_name: str, stat: str, player_id: str | None = None) -> tuple[float | None, bool]:
+    """
+    Return (line, is_market) for a player/stat.
+    is_market=True  → real Vegas prop (45% blend weight)
+    is_market=False → synthetic DB line (30% blend weight)
+    Returns (None, False) if neither is available.
+    """
     import re
     norm = re.sub(r"[^a-z ]", "", player_name.lower().strip())
-    # Exact match first, then substring fallback for name variations (Jr., accents, etc.)
+    # Real market props first
     if norm in _PLAYER_PROPS:
-        return _PLAYER_PROPS[norm].get(stat)
+        v = _PLAYER_PROPS[norm].get(stat)
+        if v:
+            return v, True
     for key, vals in _PLAYER_PROPS.items():
         if key in norm or norm in key:
-            return vals.get(stat)
-    return None
+            v = vals.get(stat)
+            if v:
+                return v, True
+    # Synthetic fallback from DB rolling averages
+    if player_id and player_id in _SYNTHETIC_PROPS:
+        v = _SYNTHETIC_PROPS[player_id].get(stat)
+        if v:
+            return v, False
+    return None, False
 
 
 def _hot_factor(player_id: str) -> float:
@@ -480,15 +554,14 @@ class PredictionEngine:
             proj_tov  = round(preds["tov"]["mean"],  1)
             proj_fg3m = round(preds["fg3m"]["mean"], 1)
 
-            # Blend with Vegas player props when available.
-            # Props are priced by large liquid markets that account for matchup,
-            # rest, rotation changes, and roster news — signals XGBoost doesn't see.
-            # Weight: 55% XGBoost (historical patterns) + 45% props (today's market).
-            _PROP_WEIGHT = 0.45
+            # Blend with prop lines — real market props at 45%, synthetic DB lines
+            # at 30%. Synthetic lines are last5×0.65 + season×0.35, which is close
+            # to how books set lines but less sharp (lower weight accordingly).
             for stat_key, proj_var in [("pts", "proj_pts"), ("reb", "proj_reb"), ("ast", "proj_ast"), ("fg3m", "proj_fg3m")]:
-                prop = _prop_line(player.player_name, stat_key)
+                prop, is_market = _prop_line(player.player_name, stat_key, player.player_id)
                 if prop is not None and prop > 0:
-                    blended = round((1 - _PROP_WEIGHT) * locals()[proj_var] + _PROP_WEIGHT * prop, 1)
+                    w = 0.45 if is_market else 0.30
+                    blended = round((1 - w) * locals()[proj_var] + w * prop, 1)
                     if stat_key == "pts":
                         proj_pts = blended
                     elif stat_key == "reb":
