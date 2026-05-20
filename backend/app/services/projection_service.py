@@ -82,6 +82,32 @@ def _fetch_player_game_data(player_ids: list[str]) -> tuple[dict[str, float], di
         return {pid: 15.0 for pid in player_ids}, {pid: 1.0 for pid in player_ids}
 
 
+def _usage_boost(projections: list, avg_min: dict, play_prob: dict) -> float:
+    """
+    When high-usage players are DNP, their possessions go to active teammates.
+    Returns a multiplier (>= 1.0) to apply to every active player's projection.
+
+    Logic: total usage budget is fixed at 1.0 per team.
+    If DNP players held U_dnp of that budget, remaining players share it:
+      boost = (active_usage + dnp_usage) / active_usage, capped at 1.25.
+    """
+    dnp = [p for p in projections if p.availability_status == "dnp"]
+    active = [p for p in projections if p.availability_status != "dnp"]
+    if not dnp or not active:
+        return 1.0
+
+    from app.simulation.state import PlayerGameState  # avoid circular at module level
+    # We need usage_rate — it's on the raw player states, not projections.
+    # Pass-through via play_prob dict as a proxy: avg_min ∝ usage for our purposes.
+    # Better: sum projected mean pts as a usage proxy.
+    dnp_pts = sum(p.projected_stats.mean.points for p in dnp)
+    active_pts = sum(p.projected_stats.mean.points for p in active)
+    if active_pts < 1.0:
+        return 1.0
+    raw_boost = (active_pts + dnp_pts) / active_pts
+    return min(1.25, raw_boost)
+
+
 def _rescale_player_pts(proj: PlayerProjection, scale: float) -> PlayerProjection:
     """Rescale a player's projected points (mean/low/high) by the team calibration factor."""
     if proj.availability_status == "dnp" or abs(scale - 1.0) < 0.001:
@@ -121,19 +147,24 @@ class ProjectionService:
         ]
         avg_min, play_prob = _fetch_player_game_data(all_active_ids)
 
-        def _blended_team_total(projections: list, off_rating: float, pace: float) -> int:
+        def _blended_team_total(
+            projections: list,
+            off_rating: float,
+            pace: float,
+            vegas_implied: float | None = None,
+        ) -> int:
             active = [p for p in projections if p.availability_status != "dnp"]
 
-            # Expected points = XGBoost prediction × P(player plays tonight).
-            # This down-weights fringe players (low GP rate) and stars who rest
-            # (load management reduces their season appearance rate).
+            # Boost active players when high-usage teammates are DNP
+            boost = _usage_boost(projections, avg_min, play_prob)
+
+            # Expected points = XGBoost prediction × P(player plays tonight) × usage boost.
             prob_weighted_pts = sum(
                 p.projected_stats.mean.points * play_prob.get(p.player_id, 0.75)
                 for p in active
-            )
+            ) * boost
 
             # Minutes normalization: scale down when expected minutes exceed 240.
-            # Use play_prob-weighted minutes so occasional players don't inflate budget.
             total_proj_min = sum(
                 avg_min.get(p.player_id, 15.0) * play_prob.get(p.player_id, 0.75)
                 for p in active
@@ -144,17 +175,22 @@ class ProjectionService:
             # Pace-efficiency anchor: (offensive_rating / 100) × possessions per game
             pace_estimate = (off_rating * pace) / 100.0
 
+            if vegas_implied is not None:
+                # Three-way blend: 50% player model, 25% pace, 25% Vegas line
+                return round(player_estimate * 0.50 + pace_estimate * 0.25 + vegas_implied * 0.25)
             return round(player_estimate * 0.6 + pace_estimate * 0.4)
 
         home_total = _blended_team_total(
             home_player_projections,
             context.home_team.offensive_rating,
             context.home_team.pace,
+            vegas_implied=context.home_vegas_total,
         )
         away_total = _blended_team_total(
             away_player_projections,
             context.away_team.offensive_rating,
             context.away_team.pace,
+            vegas_implied=context.away_vegas_total,
         )
 
         # Rescale each active player's projected points (weighted by their play probability)

@@ -73,3 +73,5 @@ class GameContext:
     live_pace_multiplier: float
     injury_risk_flags: list[str] = field(default_factory=list)
     back_to_back: bool = False
+    home_vegas_total: float | None = None
+    away_vegas_total: float | None = None

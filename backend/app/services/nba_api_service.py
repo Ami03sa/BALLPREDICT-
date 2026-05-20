@@ -359,6 +359,17 @@ def _build_minimal_team_state(team_raw: dict, score: int) -> TeamGameState:
     )
 
 
+def _apply_injury_report(team: "TeamGameState", injury_report: dict[str, str]) -> None:
+    """Mark players Out/Doubtful on the official injury report as DNP in-place."""
+    for player in team.players:
+        if player.availability_status == "dnp":
+            continue
+        status = injury_report.get(player.player_id, "")
+        if status in ("Out", "Doubtful"):
+            player.availability_status = "dnp"
+            player.dnp_reason = f"Injury report: {status}"
+
+
 async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, GameContext]]:
     """
     Pull today's NBA slate from the CDN scoreboard and player stats from stats.nba.com.
@@ -366,7 +377,18 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
         slate    – game_id → display metadata dict
         contexts – game_id → GameContext with real roster and live stats
     """
+    from app.core.config import settings
     from app.services.providers.nba_live_client import nba_live_client
+
+    # Fetch injury report and Vegas odds in parallel — both are optional enrichments.
+    injury_report, vegas_totals = await asyncio.gather(
+        nba_live_client.fetch_injury_report(),
+        nba_live_client.fetch_vegas_totals(settings.odds_api_key),
+    )
+    if injury_report:
+        logger.info("Injury report loaded: %d players flagged", len(injury_report))
+    if vegas_totals:
+        logger.info("Vegas totals loaded: %d games", len(vegas_totals))
 
     scoreboard = await nba_live_client.fetch_scoreboard()
     games = scoreboard.get("scoreboard", {}).get("games", [])
@@ -439,6 +461,16 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
                 home_team = _build_minimal_team_state(home_raw, home_score)
                 away_team = _build_minimal_team_state(away_raw, away_score)
 
+        # Apply official injury report — overrides _recent_dnp for actively listed players
+        if injury_report:
+            _apply_injury_report(home_team, injury_report)
+            _apply_injury_report(away_team, injury_report)
+
+        # Look up Vegas over/under for this matchup
+        game_total = vegas_totals.get((home_tc, away_tc))
+        home_vegas = game_total / 2.0 if game_total else None
+        away_vegas = game_total / 2.0 if game_total else None
+
         contexts[game_id] = GameContext(
             game_id=game_id,
             quarter=period,
@@ -453,6 +485,8 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
             whistle_tightness=0.43,
             playoff_intensity=0.55,
             live_pace_multiplier=1.0,
+            home_vegas_total=home_vegas,
+            away_vegas_total=away_vegas,
         )
 
     return slate, contexts

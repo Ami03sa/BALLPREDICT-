@@ -211,4 +211,73 @@ class NbaLiveClient:
         return {"game": {"homeTeam": home_team, "awayTeam": away_team}}
 
 
+    async def fetch_injury_report(self) -> dict[str, str]:
+        """
+        Fetch today's NBA injury report from stats.nba.com.
+        Returns {player_id_str: status} where status is one of:
+          "Out", "Doubtful", "Questionable", "Probable", "Available"
+        Only "Out" and "Doubtful" should be treated as DNP.
+        """
+        from datetime import date
+        today = date.today().strftime("%m/%d/%Y")
+        try:
+            data = await self._stats_get("leagueinjuryreport", {
+                "Season": self._current_season(),
+                "SeasonType": "Regular Season",
+                "LeagueId": "00",
+                "Date": today,
+                "GameNumber": 0,
+            })
+            rs = next((r for r in data.get("resultSets", []) if r["name"] == "LeagueInjuryReport"), {})
+            headers = rs.get("headers", [])
+            rows = [dict(zip(headers, row)) for row in rs.get("rowSet", [])]
+            return {str(r["Player_ID"]): r["Current_Status"] for r in rows if r.get("Player_ID")}
+        except Exception:
+            return {}
+
+    async def fetch_vegas_totals(self, api_key: str) -> dict[tuple[str, str], float]:
+        """
+        Fetch NBA game totals (over/under) from The Odds API.
+        Returns {(home_tricode, away_tricode): total} for matching games.
+        Requires a free API key from https://the-odds-api.com/
+        """
+        if not api_key:
+            return {}
+        try:
+            async with httpx.AsyncClient(timeout=10.0) as client:
+                r = await client.get(
+                    "https://api.the-odds-api.com/v4/sports/basketball_nba/odds/",
+                    params={"apiKey": api_key, "regions": "us", "markets": "totals", "oddsFormat": "american"},
+                )
+                r.raise_for_status()
+                events = r.json()
+
+            # Build reverse lookup: full name → tricode
+            from app.services.nba_api_service import TEAM_FULL_NAMES
+            name_to_tc = {v.lower(): k for k, v in TEAM_FULL_NAMES.items()}
+
+            result: dict[tuple[str, str], float] = {}
+            for event in events:
+                home_name = event.get("home_team", "").lower()
+                away_name = event.get("away_team", "").lower()
+                home_tc = name_to_tc.get(home_name)
+                away_tc = name_to_tc.get(away_name)
+                if not home_tc or not away_tc:
+                    continue
+                for bm in event.get("bookmakers", []):
+                    for market in bm.get("markets", []):
+                        if market.get("key") != "totals":
+                            continue
+                        for outcome in market.get("outcomes", []):
+                            if outcome.get("name") == "Over":
+                                result[(home_tc, away_tc)] = float(outcome["point"])
+                                break
+                        break
+                    if (home_tc, away_tc) in result:
+                        break
+            return result
+        except Exception:
+            return {}
+
+
 nba_live_client = NbaLiveClient()

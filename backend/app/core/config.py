@@ -11,6 +11,7 @@ class Settings(BaseSettings):
     nba_stats_base_url: str = "https://stats.nba.com/stats"
     websocket_tick_seconds: int = 8
     default_simulation_runs: int = 2500
+    odds_api_key: str = ""
 
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8")
 
