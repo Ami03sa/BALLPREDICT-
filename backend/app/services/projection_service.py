@@ -1,4 +1,5 @@
 import sqlite3
+from datetime import date, timedelta
 from pathlib import Path
 
 from app.schemas.game import ConfidenceBand, GameSnapshot, PlayerProjection, StatLine
@@ -8,16 +9,14 @@ from app.simulation.state import GameContext
 
 _DB_PATH = Path(__file__).parent.parent.parent / "data" / "nba_training.db"
 _GAME_MINUTES = 240.0
+_LEAGUE_AVG_DEF_RTG = 114.0  # League-average defensive rating used for opp-adjustment
 
 
 def _fetch_player_game_data(player_ids: list[str]) -> tuple[dict[str, float], dict[str, float]]:
     """
-    One DB query returning two dicts keyed by player_id:
+    Returns (avg_min, play_prob) dicts keyed by player_id.
       avg_min   — average minutes over last 10 played games
-      play_prob — probability of playing tonight = games_played / team_total_games
-
-    play_prob naturally down-weights fringe players (30-game appearances out of 82)
-    and stars who rest (load management reduces their appearance rate).
+      play_prob — games_played / team_total_games, clamped [0.25, 1.0]
     """
     if not player_ids or not _DB_PATH.exists():
         return {pid: 15.0 for pid in player_ids}, {pid: 1.0 for pid in player_ids}
@@ -25,7 +24,6 @@ def _fetch_player_game_data(player_ids: list[str]) -> tuple[dict[str, float], di
         placeholders = ",".join("?" * len(player_ids))
         conn = sqlite3.connect(str(_DB_PATH))
 
-        # Average minutes over last 10 played games
         min_rows = conn.execute(
             f"""
             SELECT player_id, AVG(min) AS avg_min
@@ -41,14 +39,12 @@ def _fetch_player_game_data(player_ids: list[str]) -> tuple[dict[str, float], di
             player_ids,
         ).fetchall()
 
-        # Games played per player + max games played on each player's team
-        # (team max = how many games the team has played this season)
         gp_rows = conn.execute(
             f"""
             SELECT
                 p.player_id,
-                COUNT(DISTINCT p.game_id)                          AS gp,
-                MAX(t.team_games)                                  AS team_games
+                COUNT(DISTINCT p.game_id)   AS gp,
+                MAX(t.team_games)           AS team_games
             FROM player_game_logs p
             JOIN (
                 SELECT team_abbreviation, COUNT(DISTINCT game_id) AS team_games
@@ -69,8 +65,6 @@ def _fetch_player_game_data(player_ids: list[str]) -> tuple[dict[str, float], di
         play_prob: dict[str, float] = {}
         for r in gp_rows:
             pid, gp, team_games = r[0], int(r[1]), int(r[2])
-            # Clamp between 0.25 and 1.0 — even a rarely-used player has some chance;
-            # even a star misses some games.
             play_prob[pid] = max(0.25, min(1.0, gp / max(1, team_games)))
 
         for pid in player_ids:
@@ -82,30 +76,83 @@ def _fetch_player_game_data(player_ids: list[str]) -> tuple[dict[str, float], di
         return {pid: 15.0 for pid in player_ids}, {pid: 1.0 for pid in player_ids}
 
 
+def _fetch_team_context(team_abbreviation: str) -> dict:
+    """
+    Returns team-level context from the DB:
+      form_factor — last-5 avg score / season avg score (clamped 0.93–1.07)
+      is_b2b      — True if team played yesterday
+    Both are used to adjust the player estimate before blending.
+    """
+    result = {"form_factor": 1.0, "is_b2b": False}
+    if not _DB_PATH.exists():
+        return result
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        season_row = conn.execute(
+            "SELECT MAX(season) FROM player_game_logs"
+        ).fetchone()
+        season = season_row[0] if season_row else None
+
+        if season:
+            # Recent 5 games: sum pts per game for this team
+            recent = conn.execute(
+                """
+                SELECT game_id, SUM(pts) AS team_score, MAX(game_date) AS gdate
+                FROM player_game_logs
+                WHERE team_abbreviation = ? AND season = ?
+                  AND season_type = 'Regular Season'
+                GROUP BY game_id
+                ORDER BY gdate DESC
+                LIMIT 5
+                """,
+                (team_abbreviation.upper(), season),
+            ).fetchall()
+
+            # Season average team score
+            season_avg_row = conn.execute(
+                """
+                SELECT AVG(team_score) FROM (
+                    SELECT game_id, SUM(pts) AS team_score
+                    FROM player_game_logs
+                    WHERE team_abbreviation = ? AND season = ?
+                      AND season_type = 'Regular Season'
+                    GROUP BY game_id
+                )
+                """,
+                (team_abbreviation.upper(), season),
+            ).fetchone()
+
+            if recent and season_avg_row and season_avg_row[0]:
+                recent_avg = sum(r[1] for r in recent) / len(recent)
+                season_avg = float(season_avg_row[0])
+                raw_factor = recent_avg / max(season_avg, 1)
+                result["form_factor"] = max(0.93, min(1.07, raw_factor))
+
+                # Back-to-back: did they play yesterday?
+                yesterday = (date.today() - timedelta(days=1)).isoformat()
+                last_game_date = str(recent[0][2])[:10] if recent else ""
+                result["is_b2b"] = last_game_date == yesterday
+
+        conn.close()
+    except Exception:
+        pass
+    return result
+
+
 def _usage_boost(projections: list, avg_min: dict, play_prob: dict) -> float:
     """
-    When high-usage players are DNP, their possessions go to active teammates.
-    Returns a multiplier (>= 1.0) to apply to every active player's projection.
-
-    Logic: total usage budget is fixed at 1.0 per team.
-    If DNP players held U_dnp of that budget, remaining players share it:
-      boost = (active_usage + dnp_usage) / active_usage, capped at 1.25.
+    When DNP players held a share of projected pts, boost remaining active players.
+    Capped at 1.25× to prevent over-inflation.
     """
     dnp = [p for p in projections if p.availability_status == "dnp"]
     active = [p for p in projections if p.availability_status != "dnp"]
     if not dnp or not active:
         return 1.0
-
-    from app.simulation.state import PlayerGameState  # avoid circular at module level
-    # We need usage_rate — it's on the raw player states, not projections.
-    # Pass-through via play_prob dict as a proxy: avg_min ∝ usage for our purposes.
-    # Better: sum projected mean pts as a usage proxy.
     dnp_pts = sum(p.projected_stats.mean.points for p in dnp)
     active_pts = sum(p.projected_stats.mean.points for p in active)
     if active_pts < 1.0:
         return 1.0
-    raw_boost = (active_pts + dnp_pts) / active_pts
-    return min(1.25, raw_boost)
+    return min(1.25, (active_pts + dnp_pts) / active_pts)
 
 
 def _rescale_player_pts(proj: PlayerProjection, scale: float) -> PlayerProjection:
@@ -147,24 +194,34 @@ class ProjectionService:
         ]
         avg_min, play_prob = _fetch_player_game_data(all_active_ids)
 
+        # Fetch team-level context (form + B2B) for both teams
+        home_tc = context.home_team.team_id.upper()
+        away_tc = context.away_team.team_id.upper()
+        home_ctx = _fetch_team_context(home_tc)
+        away_ctx = _fetch_team_context(away_tc)
+
         def _blended_team_total(
             projections: list,
             off_rating: float,
             pace: float,
+            opp_def_rating: float,
+            opp_pace: float,
+            is_home: bool,
+            form_factor: float,
+            is_b2b: bool,
             vegas_implied: float | None = None,
         ) -> int:
             active = [p for p in projections if p.availability_status != "dnp"]
 
-            # Boost active players when high-usage teammates are DNP
+            # ── Player model estimate ───────────────────────────────────────
             boost = _usage_boost(projections, avg_min, play_prob)
 
-            # Expected points = XGBoost prediction × P(player plays tonight) × usage boost.
             prob_weighted_pts = sum(
                 p.projected_stats.mean.points * play_prob.get(p.player_id, 0.75)
                 for p in active
             ) * boost
 
-            # Minutes normalization: scale down when expected minutes exceed 240.
+            # Minutes normalization: keep total minutes ≤ 240
             total_proj_min = sum(
                 avg_min.get(p.player_id, 15.0) * play_prob.get(p.player_id, 0.75)
                 for p in active
@@ -172,29 +229,64 @@ class ProjectionService:
             minute_scale = min(1.0, _GAME_MINUTES / max(1.0, total_proj_min))
             player_estimate = prob_weighted_pts * minute_scale
 
-            # Pace-efficiency anchor: (offensive_rating / 100) × possessions per game
-            pace_estimate = (off_rating * pace) / 100.0
+            # Recent team form: hot teams score more, cold teams score less
+            player_estimate *= form_factor
 
+            # Back-to-back penalty: teams on B2B historically score ~3% less
+            if is_b2b:
+                player_estimate *= 0.97
+
+            # ── Pace anchor (opponent-adjusted) ────────────────────────────
+            # Standard formula: adjust OffRtg by how much better/worse than
+            # league average the opponent defends, then use avg game pace.
+            # opp_def_rating < 114 = elite defense (suppresses scoring)
+            # opp_def_rating > 114 = weak defense (gives up more)
+            game_pace = (pace + opp_pace) / 2
+            adjusted_off_rtg = off_rating * (_LEAGUE_AVG_DEF_RTG / max(opp_def_rating, 90.0))
+            pace_estimate = (adjusted_off_rtg * game_pace) / 100.0
+
+            # Home court edge on pace anchor only (XGBoost already captures it
+            # for individual players via is_home feature; Vegas already prices it in).
+            # Apply only when no Vegas to avoid double-counting.
+            if vegas_implied is None:
+                pace_estimate += 1.5 if is_home else -1.5
+
+            # ── Blend ──────────────────────────────────────────────────────
+            # Player model is the primary driver — it uses real roster quality,
+            # matchup vulnerability, and individual form. Pace and Vegas are
+            # anchors that prevent the sum from going out of range.
             if vegas_implied is not None:
-                # Three-way blend: 50% player model, 25% pace, 25% Vegas line
-                return round(player_estimate * 0.50 + pace_estimate * 0.25 + vegas_implied * 0.25)
-            return round(player_estimate * 0.6 + pace_estimate * 0.4)
+                # Vegas is very accurate — give it meaningful weight,
+                # but keep player model as the majority driver.
+                return round(player_estimate * 0.55 + pace_estimate * 0.15 + vegas_implied * 0.30)
+            return round(player_estimate * 0.65 + pace_estimate * 0.35)
 
         home_total = _blended_team_total(
             home_player_projections,
             context.home_team.offensive_rating,
             context.home_team.pace,
+            opp_def_rating=context.away_team.defensive_rating,
+            opp_pace=context.away_team.pace,
+            is_home=True,
+            form_factor=home_ctx["form_factor"],
+            is_b2b=home_ctx["is_b2b"],
             vegas_implied=context.home_vegas_total,
         )
         away_total = _blended_team_total(
             away_player_projections,
             context.away_team.offensive_rating,
             context.away_team.pace,
+            opp_def_rating=context.home_team.defensive_rating,
+            opp_pace=context.home_team.pace,
+            is_home=False,
+            form_factor=away_ctx["form_factor"],
+            is_b2b=away_ctx["is_b2b"],
             vegas_implied=context.away_vegas_total,
         )
 
-        # Rescale each active player's projected points (weighted by their play probability)
-        # so individual scores still add up to the team total.
+        # Rescale individual players so their scores sum to the team total.
+        # This keeps individual predictions correlated with the final score —
+        # if the team total moves up/down, every player moves proportionally.
         def _apply_scale(projections: list, team_total: int) -> list[PlayerProjection]:
             active = [p for p in projections if p.availability_status != "dnp"]
             prob_weighted_raw = sum(
