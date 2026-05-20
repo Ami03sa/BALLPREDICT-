@@ -194,6 +194,16 @@ class ProjectionService:
         ]
         avg_min, play_prob = _fetch_player_game_data(all_active_ids)
 
+        # Floor play probability at 0.85 for confirmed starters — they almost always play.
+        starter_ids = {
+            p.player_id
+            for p in context.home_team.players + context.away_team.players
+            if p.rotation_role == "starter"
+        }
+        for pid in starter_ids:
+            if pid in play_prob:
+                play_prob[pid] = max(0.85, play_prob[pid])
+
         # Fetch team-level context (form + B2B) for both teams
         home_tc = context.home_team.team_id.upper()
         away_tc = context.away_team.team_id.upper()
@@ -311,13 +321,19 @@ class ProjectionService:
 
         player_projections = home_player_projections + away_player_projections
 
-        win_series = [
-            {"minute": minute, "home": max(0.05, min(0.95, home_projection.win_probability + (minute - 24) * 0.005))}
-            for minute in range(0, 49, 4)
-        ]
-        for row in win_series:
-            row["away"] = round(1 - row["home"], 3)
-            row["home"] = round(row["home"], 3)
+        # Win probability series: anchor to the model's pre-game estimate, then
+        # show how uncertainty compresses as more of the game is played.
+        # At minute 0 (full game ahead) uncertainty is highest → closer to 0.5.
+        # At minute 48 (game over) uncertainty collapses → converges to the projection.
+        base_wp = home_projection.win_probability
+        win_series = []
+        for minute in range(0, 49, 4):
+            fraction_played = minute / 48.0
+            # Interpolate between 0.5 (max uncertainty) and base_wp (full certainty)
+            # using a gentle curve so early minutes don't swing too far from 0.5.
+            time_wp = 0.5 + (base_wp - 0.5) * (0.25 + 0.75 * fraction_played)
+            time_wp = max(0.05, min(0.95, time_wp))
+            win_series.append({"minute": minute, "home": round(time_wp, 3), "away": round(1 - time_wp, 3)})
 
         default_feed = [
             {

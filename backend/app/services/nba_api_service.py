@@ -390,7 +390,7 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
     from app.services.providers.nba_live_client import nba_live_client
 
     # Fetch injury report, Vegas odds, and real team ratings in parallel.
-    injury_report, (vegas_totals, event_ids), team_ratings = await asyncio.gather(
+    injury_report, (vegas_totals, vegas_spreads, event_ids), team_ratings = await asyncio.gather(
         nba_live_client.fetch_injury_report(),
         nba_live_client.fetch_vegas_totals(settings.odds_api_key),
         nba_live_client.fetch_team_ratings(),
@@ -486,10 +486,18 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
             _apply_injury_report(home_team, injury_report)
             _apply_injury_report(away_team, injury_report)
 
-        # Look up Vegas over/under for this matchup
+        # Derive differentiated home/away implied totals from over/under + spread.
+        # Formula: home_implied = (total - home_spread) / 2
+        #          away_implied = (total + home_spread) / 2
+        # e.g. total=216.5, home_spread=-6.5 → home=111.5, away=105.0
         game_total = vegas_totals.get((home_tc, away_tc))
-        home_vegas = game_total / 2.0 if game_total else None
-        away_vegas = game_total / 2.0 if game_total else None
+        if game_total:
+            home_spread = vegas_spreads.get((home_tc, away_tc), 0.0)
+            home_vegas = round((game_total - home_spread) / 2.0, 2)
+            away_vegas = round((game_total + home_spread) / 2.0, 2)
+        else:
+            home_vegas = None
+            away_vegas = None
 
         contexts[game_id] = GameContext(
             game_id=game_id,

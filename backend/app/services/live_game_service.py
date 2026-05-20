@@ -166,12 +166,29 @@ class LiveGameService:
                     if context.away_team.players and _has_live_stats(context.away_team.players)
                     else (context.away_team.players or startup.away_team.players)
                 )
-                if home_players or away_players:
-                    context = dc_replace(
-                        context,
-                        home_team=dc_replace(context.home_team, players=home_players),
-                        away_team=dc_replace(context.away_team, players=away_players),
-                    )
+
+                # Always inject startup team ratings and Vegas totals — the live boxscore
+                # context computes ratings from partial scores (score=0 pre-game → off_rating=114),
+                # while startup fetched the real season OffRtg/DefRtg/Pace for every team.
+                context = dc_replace(
+                    context,
+                    home_team=dc_replace(
+                        context.home_team,
+                        offensive_rating=startup.home_team.offensive_rating,
+                        defensive_rating=startup.home_team.defensive_rating,
+                        pace=startup.home_team.pace,
+                        players=home_players or context.home_team.players,
+                    ),
+                    away_team=dc_replace(
+                        context.away_team,
+                        offensive_rating=startup.away_team.offensive_rating,
+                        defensive_rating=startup.away_team.defensive_rating,
+                        pace=startup.away_team.pace,
+                        players=away_players or context.away_team.players,
+                    ),
+                    home_vegas_total=startup.home_vegas_total,
+                    away_vegas_total=startup.away_vegas_total,
+                )
             return context, scoreboard_game
         except StopIteration:
             pass

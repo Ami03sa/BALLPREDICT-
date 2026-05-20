@@ -298,20 +298,24 @@ class NbaLiveClient:
         except Exception:
             return {}
 
-    async def fetch_vegas_totals(self, api_key: str) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], str]]:
+    async def fetch_vegas_totals(self, api_key: str) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], float], dict[tuple[str, str], str]]:
         """
-        Fetch NBA game totals (over/under) from The Odds API.
+        Fetch NBA game totals and spreads from The Odds API.
         Returns:
-          totals    – {(home_tc, away_tc): game_total}
-          event_ids – {(home_tc, away_tc): event_id}  (needed for player props)
+          totals    – {(home_tc, away_tc): over_under_total}
+          spreads   – {(home_tc, away_tc): home_team_spread}  e.g. -6.5 if home favored
+          event_ids – {(home_tc, away_tc): event_id}
+        Use spread to derive differentiated implied totals:
+          home_implied = (total - home_spread) / 2
+          away_implied = (total + home_spread) / 2
         """
         if not api_key:
-            return {}, {}
+            return {}, {}, {}
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 r = await client.get(
                     "https://api.the-odds-api.com/v4/sports/basketball_nba/odds/",
-                    params={"apiKey": api_key, "regions": "us", "markets": "totals", "oddsFormat": "american"},
+                    params={"apiKey": api_key, "regions": "us", "markets": "totals,spreads", "oddsFormat": "american"},
                 )
                 r.raise_for_status()
                 events = r.json()
@@ -320,6 +324,7 @@ class NbaLiveClient:
             name_to_tc = {v.lower(): k for k, v in TEAM_FULL_NAMES.items()}
 
             totals: dict[tuple[str, str], float] = {}
+            spreads: dict[tuple[str, str], float] = {}
             event_ids: dict[tuple[str, str], str] = {}
 
             for event in events:
@@ -333,19 +338,22 @@ class NbaLiveClient:
                 event_ids[key] = event.get("id", "")
                 for bm in event.get("bookmakers", []):
                     for market in bm.get("markets", []):
-                        if market.get("key") != "totals":
-                            continue
-                        for outcome in market.get("outcomes", []):
-                            if outcome.get("name") == "Over":
-                                totals[key] = float(outcome["point"])
-                                break
-                        break
-                    if key in totals:
-                        break
+                        mkey = market.get("key")
+                        if mkey == "totals" and key not in totals:
+                            for outcome in market.get("outcomes", []):
+                                if outcome.get("name") == "Over":
+                                    totals[key] = float(outcome["point"])
+                                    break
+                        elif mkey == "spreads" and key not in spreads:
+                            # Find the home team outcome to get home spread (negative = favourite)
+                            for outcome in market.get("outcomes", []):
+                                if outcome.get("name", "").lower() == home_name:
+                                    spreads[key] = float(outcome["point"])
+                                    break
 
-            return totals, event_ids
+            return totals, spreads, event_ids
         except Exception:
-            return {}, {}
+            return {}, {}, {}
 
     async def fetch_player_props_bulk(
         self,
