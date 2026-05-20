@@ -433,12 +433,13 @@ class ProjectionService:
             m = proj.projected_stats.mean
 
             # Use actual conditional mean (avg stats on 30+ pt nights) when available.
-            # Fall back to mean + 1σ (a solid good night) if no breakout games on record.
+            # Floor at projected mean — breakout section should never show a lower
+            # number than the base projection (e.g. fewer 3PM because the 30-pt games
+            # came from driving/FT heavy nights rather than perimeter shooting).
             def _bo_mean(bo_key: str, mean_val: float, std_key: str) -> float:
                 v = vol.get(bo_key)
-                if v is not None:
-                    return v
-                return round(mean_val + vol.get(std_key, 2.0), 1)
+                raw = v if v is not None else round(mean_val + vol.get(std_key, 2.0), 1)
+                return round(max(mean_val, raw), 1)
 
             bo_pts  = _bo_mean("bo_mean_pts",  m.points,      "pts_std")
             bo_ast  = _bo_mean("bo_mean_ast",  m.assists,     "ast_std")
