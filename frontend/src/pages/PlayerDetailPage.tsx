@@ -30,7 +30,7 @@ function BreakoutPanel({ stats }: { stats: BreakoutStats }) {
     <section className={`panel p-6 ${alert ? "border border-orange-400/40 bg-orange-400/5" : ""}`}>
       <div className="mb-4 flex items-center justify-between">
         <div className="flex items-center gap-3">
-          <h2 className="panel-title">Breakout Upside</h2>
+          <h2 className="panel-title">Breakout Game Profile</h2>
           {alert && (
             <span className="rounded-full bg-orange-400/20 px-3 py-1 text-xs font-semibold uppercase tracking-widest text-orange-300">
               Alert
@@ -44,12 +44,12 @@ function BreakoutPanel({ stats }: { stats: BreakoutStats }) {
       </div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-3">
         {[
-          { label: "Pts Ceiling", value: stats.ceilingPts },
-          { label: "Ast Ceiling", value: stats.ceilingAst },
-          { label: "Reb Ceiling", value: stats.ceilingReb },
-          { label: "3PM Ceiling", value: stats.ceilingFg3m },
-          { label: "Stl Ceiling", value: stats.ceilingStl },
-          { label: "Blk Ceiling", value: stats.ceilingBlk },
+          { label: "Pts on Big Nights", value: stats.meanPts },
+          { label: "Ast on Big Nights", value: stats.meanAst },
+          { label: "Reb on Big Nights", value: stats.meanReb },
+          { label: "3PM on Big Nights", value: stats.meanFg3m },
+          { label: "Stl on Big Nights", value: stats.meanStl },
+          { label: "Blk on Big Nights", value: stats.meanBlk },
         ].map(({ label, value }) => (
           <div key={label} className="rounded-2xl border border-white/8 bg-white/3 px-4 py-3">
             <p className="text-xs uppercase tracking-[0.2em] text-muted">{label}</p>

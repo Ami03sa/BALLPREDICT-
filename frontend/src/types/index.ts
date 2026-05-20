@@ -135,12 +135,12 @@ export type GamePreview = {
 };
 
 export type BreakoutStats = {
-  ceilingPts: number;
-  ceilingAst: number;
-  ceilingReb: number;
-  ceilingFg3m: number;
-  ceilingStl: number;
-  ceilingBlk: number;
+  meanPts: number;
+  meanAst: number;
+  meanReb: number;
+  meanFg3m: number;
+  meanStl: number;
+  meanBlk: number;
   breakoutProbability: number;
   breakoutAlert: boolean;
 };

@@ -60,24 +60,41 @@ def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
                 total_v += w * float(val)
             return total_v / total_w if total_w > 0 else 0.0
 
+        def _cond_mean(stat_vals: list[float], pts_list: list[float]) -> float | None:
+            # Average of stat in games where the player scored ≥ threshold.
+            vals = [s for s, p in zip(stat_vals, pts_list) if p >= _BREAKOUT_THRESHOLD]
+            return round(sum(vals) / len(vals), 1) if vals else None
+
         result: dict[str, dict] = {}
         for pid, games in buckets.items():
             cols = list(zip(*games))  # (pts, ast, reb, fg3m, stl, blk, rn)
             rn_list = [int(v) for v in cols[6]]
             pts_list = [float(v) for v in cols[0]]
+            ast_list = [float(v) for v in cols[1]]
+            reb_list = [float(v) for v in cols[2]]
+            fg3m_list = [float(v) for v in cols[3]]
+            stl_list = [float(v) for v in cols[4]]
+            blk_list = [float(v) for v in cols[5]]
             pts_rn = list(zip(pts_list, rn_list))
 
             result[pid] = {
-                "pts_std":       round(_std(pts_list), 1),
-                "ast_std":       round(_std([float(v) for v in cols[1]]), 1),
-                "reb_std":       round(_std([float(v) for v in cols[2]]), 1),
-                "fg3m_std":      round(_std([float(v) for v in cols[3]]), 1),
-                "stl_std":       round(_std([float(v) for v in cols[4]]), 1),
-                "blk_std":       round(_std([float(v) for v in cols[5]]), 1),
-                "breakout_pct":  round(
+                "pts_std":          round(_std(pts_list), 1),
+                "ast_std":          round(_std(ast_list), 1),
+                "reb_std":          round(_std(reb_list), 1),
+                "fg3m_std":         round(_std(fg3m_list), 1),
+                "stl_std":          round(_std(stl_list), 1),
+                "blk_std":          round(_std(blk_list), 1),
+                "breakout_pct":     round(
                     sum(1 for p in pts_list if p >= _BREAKOUT_THRESHOLD) / len(pts_list), 3
                 ),
                 "weighted_mean_pts": round(_weighted_mean(pts_rn), 1),
+                # Conditional means: what they average across the board on breakout nights
+                "bo_mean_pts":  _cond_mean(pts_list, pts_list),
+                "bo_mean_ast":  _cond_mean(ast_list, pts_list),
+                "bo_mean_reb":  _cond_mean(reb_list, pts_list),
+                "bo_mean_fg3m": _cond_mean(fg3m_list, pts_list),
+                "bo_mean_stl":  _cond_mean(stl_list, pts_list),
+                "bo_mean_blk":  _cond_mean(blk_list, pts_list),
             }
         return result
     except Exception:
@@ -413,34 +430,38 @@ class ProjectionService:
             opp_factor = min(1.4, max(0.6, opp_def_rtg / _LEAGUE_AVG_DEF_RTG))
             adj_breakout_pct = min(1.0, raw_breakout_pct * opp_factor)
 
-            # Ceiling = max(xgb_high, mean + 2.0×std) — 97th percentile of their range.
-            def _ceil(mean_val: float, xgb_high: float, std_key: str) -> float:
-                std = vol.get(std_key, 2.0)
-                return round(max(xgb_high, mean_val + 2.0 * std), 1)
-
             m = proj.projected_stats.mean
-            h = proj.projected_stats.high
 
-            ceil_pts  = _ceil(m.points,      h.points,      "pts_std")
-            ceil_ast  = _ceil(m.assists,     h.assists,     "ast_std")
-            ceil_reb  = _ceil(m.rebounds,    h.rebounds,    "reb_std")
-            ceil_fg3m = _ceil(m.threes_made, h.threes_made, "fg3m_std")
-            ceil_stl  = _ceil(m.steals,      h.steals,      "stl_std")
-            ceil_blk  = _ceil(m.blocks,      h.blocks,      "blk_std")
+            # Use actual conditional mean (avg stats on 30+ pt nights) when available.
+            # Fall back to mean + 1σ (a solid good night) if no breakout games on record.
+            def _bo_mean(bo_key: str, mean_val: float, std_key: str) -> float:
+                v = vol.get(bo_key)
+                if v is not None:
+                    return v
+                return round(mean_val + vol.get(std_key, 2.0), 1)
 
-            ceiling_signal = min(0.5, max(0.0, (ceil_pts - _BREAKOUT_THRESHOLD) / 20.0))
+            bo_pts  = _bo_mean("bo_mean_pts",  m.points,      "pts_std")
+            bo_ast  = _bo_mean("bo_mean_ast",  m.assists,     "ast_std")
+            bo_reb  = _bo_mean("bo_mean_reb",  m.rebounds,    "reb_std")
+            bo_fg3m = _bo_mean("bo_mean_fg3m", m.threes_made, "fg3m_std")
+            bo_stl  = _bo_mean("bo_mean_stl",  m.steals,      "stl_std")
+            bo_blk  = _bo_mean("bo_mean_blk",  m.blocks,      "blk_std")
+
+            # ceiling_signal still uses pts + 2σ for probability calculation
+            pts_ceil_signal = m.points + 2.0 * vol.get("pts_std", 2.0)
+            ceiling_signal = min(0.5, max(0.0, (pts_ceil_signal - _BREAKOUT_THRESHOLD) / 20.0))
             raw_prob = adj_breakout_pct * 0.55 + ceiling_signal * 0.45
             breakout_prob = round(min(0.95, raw_prob * playoff_mult), 2)
-            breakout_alert = breakout_prob >= 0.20 or ceil_pts >= _BREAKOUT_THRESHOLD
+            breakout_alert = breakout_prob >= 0.20 or bo_pts >= _BREAKOUT_THRESHOLD
 
             return proj.model_copy(update={
                 "breakout_stats": BreakoutStats(
-                    ceiling_pts=ceil_pts,
-                    ceiling_ast=ceil_ast,
-                    ceiling_reb=ceil_reb,
-                    ceiling_fg3m=ceil_fg3m,
-                    ceiling_stl=ceil_stl,
-                    ceiling_blk=ceil_blk,
+                    mean_pts=bo_pts,
+                    mean_ast=bo_ast,
+                    mean_reb=bo_reb,
+                    mean_fg3m=bo_fg3m,
+                    mean_stl=bo_stl,
+                    mean_blk=bo_blk,
                     breakout_probability=breakout_prob,
                     breakout_alert=breakout_alert,
                 ),

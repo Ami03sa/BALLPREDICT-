@@ -35,15 +35,15 @@ class CoachingAdjustment(BaseModel):
 
 
 class BreakoutStats(BaseModel):
-    """Separate upside column — volatility-based ceilings and breakout probability."""
-    ceiling_pts: float
-    ceiling_ast: float
-    ceiling_reb: float
-    ceiling_fg3m: float
-    ceiling_stl: float
-    ceiling_blk: float
+    """Average stats across a player's actual breakout games (pts ≥ 30)."""
+    mean_pts: float
+    mean_ast: float
+    mean_reb: float
+    mean_fg3m: float
+    mean_stl: float
+    mean_blk: float
     breakout_probability: float  # 0-1 probability of scoring 30+
-    breakout_alert: bool         # True when elevated ceiling detected
+    breakout_alert: bool         # True when breakout probability is elevated
 
 
 class PlayerProjection(BaseModel):

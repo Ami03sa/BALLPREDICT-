@@ -161,12 +161,12 @@ export async function fetchPlayerDetail(gameId: string, playerId: string): Promi
     coachCounterSummary: data.coach_counter_summary,
     breakoutStats: data.projection.breakout_stats
       ? {
-          ceilingPts: data.projection.breakout_stats.ceiling_pts,
-          ceilingAst: data.projection.breakout_stats.ceiling_ast,
-          ceilingReb: data.projection.breakout_stats.ceiling_reb,
-          ceilingFg3m: data.projection.breakout_stats.ceiling_fg3m,
-          ceilingStl: data.projection.breakout_stats.ceiling_stl,
-          ceilingBlk: data.projection.breakout_stats.ceiling_blk,
+          meanPts: data.projection.breakout_stats.mean_pts,
+          meanAst: data.projection.breakout_stats.mean_ast,
+          meanReb: data.projection.breakout_stats.mean_reb,
+          meanFg3m: data.projection.breakout_stats.mean_fg3m,
+          meanStl: data.projection.breakout_stats.mean_stl,
+          meanBlk: data.projection.breakout_stats.mean_blk,
           breakoutProbability: data.projection.breakout_stats.breakout_probability,
           breakoutAlert: data.projection.breakout_stats.breakout_alert,
         }
