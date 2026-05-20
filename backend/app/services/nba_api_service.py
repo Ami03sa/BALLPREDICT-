@@ -397,10 +397,19 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
     )
     if injury_report:
         logger.info("Injury report loaded: %d players flagged", len(injury_report))
-    if vegas_totals:
-        logger.info("Vegas totals loaded: %d games", len(vegas_totals))
     if team_ratings:
         logger.info("Team ratings loaded: %d teams", len(team_ratings))
+
+    # Fall back to ESPN odds if The Odds API is unavailable (quota exhausted, no key, etc.)
+    if not vegas_totals:
+        logger.info("Odds API unavailable — falling back to ESPN odds")
+        espn_totals, espn_spreads = await nba_live_client.fetch_vegas_totals_espn()
+        if espn_totals:
+            vegas_totals = espn_totals
+            vegas_spreads = espn_spreads
+            logger.info("ESPN odds loaded: %d games", len(vegas_totals))
+    else:
+        logger.info("Vegas totals loaded: %d games (Odds API)", len(vegas_totals))
 
     # Fetch player props for all games and push into prediction engine.
     if event_ids and settings.odds_api_key:

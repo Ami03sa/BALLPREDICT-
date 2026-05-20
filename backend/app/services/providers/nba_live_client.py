@@ -355,6 +355,65 @@ class NbaLiveClient:
         except Exception:
             return {}, {}, {}
 
+    # ESPN uses shortened abbreviations that differ from NBA tricodes
+    _ESPN_TO_NBA: dict[str, str] = {
+        "SA": "SAS", "GS": "GSW", "NO": "NOP", "NY": "NYK",
+        "UTAH": "UTA", "WSH": "WAS", "CHA": "CHA",
+    }
+
+    async def fetch_vegas_totals_espn(self) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], float]]:
+        """
+        Free fallback for Vegas totals + spreads using ESPN's public scoreboard API.
+        No API key required. Returns (totals, spreads) in the same format as fetch_vegas_totals.
+        event_ids are not available here (ESPN doesn't expose them for props).
+        """
+        try:
+            data = await self._cdn_get("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard".replace(
+                f"{self._cdn_headers.get('Referer', '')}".rstrip("/"), ""
+            ).lstrip("/"))
+        except Exception:
+            # _cdn_get prepends nba_live_base_url — fetch directly instead
+            try:
+                async with httpx.AsyncClient(timeout=10.0, headers=self._cdn_headers) as client:
+                    r = await client.get("https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard")
+                    r.raise_for_status()
+                    data = r.json()
+            except Exception:
+                return {}, {}
+
+        totals: dict[tuple[str, str], float] = {}
+        spreads: dict[tuple[str, str], float] = {}
+
+        for event in data.get("events", []):
+            comps = event.get("competitions", [])
+            if not comps:
+                continue
+            comp = comps[0]
+            competitors = comp.get("competitors", [])
+            home = next((c for c in competitors if c.get("homeAway") == "home"), None)
+            away = next((c for c in competitors if c.get("homeAway") == "away"), None)
+            if not home or not away:
+                continue
+            home_tc = str(home.get("team", {}).get("abbreviation", "")).upper()
+            away_tc = str(away.get("team", {}).get("abbreviation", "")).upper()
+            home_tc = self._ESPN_TO_NBA.get(home_tc, home_tc)
+            away_tc = self._ESPN_TO_NBA.get(away_tc, away_tc)
+            if not home_tc or not away_tc:
+                continue
+            odds_list = comp.get("odds", [])
+            if not odds_list:
+                continue
+            odds = odds_list[0]
+            total = odds.get("overUnder")
+            spread = odds.get("spread")  # positive = home underdog, negative = home favourite
+            if total:
+                key = (home_tc, away_tc)
+                totals[key] = float(total)
+                if spread is not None:
+                    spreads[key] = float(spread)
+
+        return totals, spreads
+
     async def fetch_player_props_bulk(
         self,
         api_key: str,
