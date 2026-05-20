@@ -47,7 +47,6 @@ _PLAYER_PROPS: dict[str, dict[str, float]] = {}
 # Computed from DB rolling averages when market props are unavailable.
 # Keyed by player_id → {pts, reb, ast, fg3m}.
 _SYNTHETIC_PROPS: dict[str, dict[str, float]] = {}
-_DB_PATH_PE = Path(__file__).parent.parent.parent / "data" / "nba_training.db"
 
 
 def set_player_props(props: dict[str, dict[str, float]]) -> None:
@@ -62,12 +61,11 @@ def _load_synthetic_props(player_ids: list[str]) -> None:
     Stored in _SYNTHETIC_PROPS keyed by player_id.
     """
     global _SYNTHETIC_PROPS
-    if not player_ids or not _DB_PATH_PE.exists():
+    if not player_ids or not _DB_PATH.exists():
         return
     try:
-        import sqlite3
         placeholders = ",".join("?" * len(player_ids))
-        conn = sqlite3.connect(str(_DB_PATH_PE))
+        conn = sqlite3.connect(str(_DB_PATH))
         rows = conn.execute(
             f"""
             SELECT

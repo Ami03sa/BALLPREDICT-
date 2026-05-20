@@ -145,7 +145,7 @@ class LiveGameService:
         """Try live fetch first; fall back to startup context."""
         from dataclasses import replace as dc_replace
         try:
-            context, scoreboard_game, _, playbyplay = await self._build_live_context_bundle(game_id)
+            context, scoreboard_game, _ = await self._build_live_context_bundle(game_id)
             # If the live fetch produced no players (e.g. pre-game, boxscore unavailable),
             # enrich with the startup context's season-average rosters.
             startup = self._contexts.get(game_id)
@@ -199,7 +199,7 @@ class LiveGameService:
             raise HTTPException(status_code=404, detail=f"Game {game_id} not available")
         return context, None
 
-    async def _build_live_context_bundle(self, game_id: str) -> tuple[GameContext, dict[str, Any], dict[str, Any], dict[str, Any]]:
+    async def _build_live_context_bundle(self, game_id: str) -> tuple[GameContext, dict[str, Any], dict[str, Any]]:
         scoreboard = await nba_live_client.fetch_scoreboard()
         games = scoreboard.get("scoreboard", {}).get("games", [])
         scoreboard_game = next(game for game in games if str(game.get("gameId")) == str(game_id))
@@ -210,14 +210,8 @@ class LiveGameService:
         except Exception as exc:
             logger.warning("Boxscore unavailable for %s (%s) — using scoreboard data only.", game_id, exc)
 
-        playbyplay: dict[str, Any] = {}
-        try:
-            playbyplay = await nba_live_client.fetch_playbyplay(str(game_id))
-        except httpx.HTTPError:
-            pass
-
         context = self._build_live_context(scoreboard_game, boxscore)
-        return context, scoreboard_game, boxscore, playbyplay
+        return context, scoreboard_game, boxscore
 
     def _build_live_context(self, scoreboard_game: dict[str, Any], boxscore: dict[str, Any]) -> GameContext:
         game = boxscore.get("game", {})
@@ -643,30 +637,6 @@ class LiveGameService:
             f"{away_name} and {home_name} are the first leverage points. BallPredict will reshape projected efficiency, "
             "pace, and teammate creation once the live usage and scoring burden becomes clear."
         )
-
-    def _build_live_possession_feed(self, playbyplay: dict[str, Any]) -> list[dict]:
-        actions = playbyplay.get("game", {}).get("actions", [])
-        feed: list[dict] = []
-        for action in actions[-6:]:
-            summary = action.get("description") or f"{action.get('playerName', 'Team')} {action.get('actionType', 'action')}"
-            feed.append(
-                {
-                    "quarter": int(action.get("period") or 0),
-                    "clock": self._format_clock(action.get("clock", "")),
-                    "summary": summary,
-                    "leverage": self._action_leverage(action),
-                }
-            )
-        return list(reversed(feed))
-
-    def _action_leverage(self, action: dict[str, Any]) -> str:
-        period = int(action.get("period") or 0)
-        action_type = str(action.get("actionType", "")).lower()
-        if period >= 4 or action_type in {"turnover", "foul", "made shot", "rebound"}:
-            return "high"
-        if action_type in {"missed shot", "substitution"}:
-            return "medium"
-        return "low"
 
     def _status_label(self, game_status: Any) -> str:
         status_int = int(game_status or 0)
