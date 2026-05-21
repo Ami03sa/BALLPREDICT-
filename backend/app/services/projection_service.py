@@ -348,6 +348,8 @@ class ProjectionService:
         home_ctx = _fetch_team_context(home_tc)
         away_ctx = _fetch_team_context(away_tc)
 
+        home_advantage = context.home_advantage  # typically 2.4–2.5 pts
+
         def _blended_team_total(
             projections: list,
             off_rating: float,
@@ -393,12 +395,6 @@ class ProjectionService:
             adjusted_off_rtg = off_rating * (_LEAGUE_AVG_DEF_RTG / max(opp_def_rating, 90.0))
             pace_estimate = (adjusted_off_rtg * game_pace) / 100.0
 
-            # Home court edge on pace anchor only (XGBoost already captures it
-            # for individual players via is_home feature; Vegas already prices it in).
-            # Apply only when no Vegas to avoid double-counting.
-            if vegas_implied is None:
-                pace_estimate += 1.5 if is_home else -1.5
-
             # ── Blend ──────────────────────────────────────────────────────
             # Player model is the primary driver — it uses real roster quality,
             # matchup vulnerability, and individual form. Pace and Vegas are
@@ -406,8 +402,20 @@ class ProjectionService:
             if vegas_implied is not None:
                 # Vegas is very accurate — give it meaningful weight,
                 # but keep player model as the majority driver.
+                # Home court is already priced into Vegas odds.
                 return round(player_estimate * 0.55 + pace_estimate * 0.15 + vegas_implied * 0.30)
-            return round(player_estimate * 0.65 + pace_estimate * 0.35)
+            # No Vegas: apply home advantage directly to the final total so it
+            # actually differentiates the teams (±1.5 on pace_estimate only gives
+            # ~0.5 pt effective difference after weighting — far too small).
+            home_bonus = home_advantage if is_home else -home_advantage
+            return round(player_estimate * 0.65 + pace_estimate * 0.35 + home_bonus)
+
+        logger.debug(
+            "Score blend [%s]: home_vegas=%s away_vegas=%s",
+            context.game_id,
+            context.home_vegas_total,
+            context.away_vegas_total,
+        )
 
         home_total = _blended_team_total(
             home_player_projections,
