@@ -497,16 +497,14 @@ class ProjectionService:
         home_total += _breakout_boost(home_player_projections, context.home_vegas_total)
         away_total += _breakout_boost(away_player_projections, context.away_vegas_total)
 
-        # Lock the predicted final score to the pre-game estimate.
-        # Once cached (before tip-off), it never changes — even as live data
-        # comes in. Win probability and player stats still update live.
+        # Lock the predicted final score on the first computation for this game.
+        # Cached immediately whether pre-game or already live (e.g. after restart).
+        # Every subsequent call returns the same numbers. Win probability and
+        # player stats still update live — only the final score is frozen.
         game_id = context.game_id
-        live_home = context.home_team.score
-        live_away = context.away_team.score
-        is_live = context.quarter >= 1 and (live_home > 0 or live_away > 0)
         if game_id in _pregame_scores:
             home_total, away_total = _pregame_scores[game_id]
-        elif not is_live:
+        else:
             _pregame_scores[game_id] = (home_total, away_total)
 
         home_projection = prediction_engine.project_team(
