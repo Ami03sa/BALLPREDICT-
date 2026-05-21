@@ -390,6 +390,8 @@ def _build_features(
     h2h: dict | None = None,
     is_playoffs: bool = False,
     splits: dict | None = None,
+    team_elo: float = 1500.0,
+    opp_elo: float = 1500.0,
 ) -> dict:
     row: dict[str, float] = {}
 
@@ -439,6 +441,11 @@ def _build_features(
         row[f"{stat}_vs_opp_last3"] = _rolling(vals, 3) if vals else fallback
         row[f"{stat}_vs_opp_avg"]   = float(np.mean(vals)) if vals else fallback
 
+    # Team ELO — captures cumulative team quality better than season ratings
+    row["team_elo"] = team_elo
+    row["opp_elo"]  = opp_elo
+    row["elo_diff"] = team_elo - opp_elo
+
     return row
 
 
@@ -462,11 +469,62 @@ _NOISE_SCALES: dict[str, float] = {
     "min_std_last10": 0.5,
     "home_pts_avg": 2.0, "away_pts_avg": 2.0,
     "pts_vs_opp_last3": 4.5, "pts_vs_opp_avg": 2.5,
+    "team_elo": 15.0, "opp_elo": 15.0, "elo_diff": 20.0,
     "ast_vs_opp_last3": 1.5, "ast_vs_opp_avg": 0.8,
     "reb_vs_opp_last3": 2.0, "reb_vs_opp_avg": 1.0,
 }
 
 _N_RUNS = 200  # number of perturbed runs per prediction
+
+
+_ELO_CACHE: dict[str, float] = {}
+_ELO_CACHE_LOADED = False
+
+def _load_team_elo() -> dict[str, float]:
+    """
+    Compute each team's current ELO from all game results in the DB.
+    ELO before each game is tracked chronologically; the final value is the
+    team's current strength estimate. Cached in memory after first call.
+    """
+    global _ELO_CACHE_LOADED
+    if _ELO_CACHE_LOADED:
+        return _ELO_CACHE
+    _ELO_CACHE_LOADED = True
+    if not _DB_PATH.exists():
+        return _ELO_CACHE
+    try:
+        conn = sqlite3.connect(_DB_PATH)
+        rows = conn.execute("""
+            SELECT g.game_date, g.game_id, g.team, g.opp, g.team_score, o.team_score AS opp_score
+            FROM (
+                SELECT game_date, game_id, team_abbreviation AS team, opponent_abbreviation AS opp,
+                       SUM(pts) AS team_score
+                FROM player_game_logs WHERE min >= 5
+                GROUP BY game_id, team_abbreviation, opponent_abbreviation, game_date
+            ) g
+            JOIN (
+                SELECT game_id, team_abbreviation AS opp, SUM(pts) AS team_score
+                FROM player_game_logs WHERE min >= 5
+                GROUP BY game_id, team_abbreviation
+            ) o ON g.game_id = o.game_id AND g.opp = o.opp
+            ORDER BY g.game_date
+        """).fetchall()
+        conn.close()
+
+        elo: dict[str, float] = {}
+        K, INIT = 20.0, 1500.0
+        for game_date, game_id, team, opp, t_score, o_score in rows:
+            t_elo = elo.get(team, INIT)
+            o_elo = elo.get(opp, INIT)
+            exp_t = 1.0 / (1.0 + 10 ** ((o_elo - t_elo) / 400.0))
+            actual = 1.0 if t_score > o_score else 0.5 if t_score == o_score else 0.0
+            elo[team] = t_elo + K * (actual - exp_t)
+            elo[opp]  = o_elo + K * ((1 - actual) - (1 - exp_t))
+
+        _ELO_CACHE.update(elo)
+    except Exception:
+        pass
+    return _ELO_CACHE
 
 
 def _xgb_predict(player: PlayerGameState, opponent_id: str, is_home: bool, is_playoffs: bool = False) -> dict[str, dict] | None:
@@ -482,7 +540,12 @@ def _xgb_predict(player: PlayerGameState, opponent_id: str, is_home: bool, is_pl
     opp_def  = _opponent_def_stats(opponent_id, position)
     h2h      = _player_vs_opp(player.player_id, opponent_id)
     splits   = _home_away_splits(player.player_id)
-    feat_row = _build_features(player, history, opp_def, is_home, h2h, is_playoffs, splits)
+    elo_ratings = _load_team_elo()
+    team_id_upper = player.team_id.upper()
+    opp_id_upper  = opponent_id.upper()
+    team_elo = elo_ratings.get(team_id_upper, 1500.0)
+    opp_elo  = elo_ratings.get(opp_id_upper, 1500.0)
+    feat_row = _build_features(player, history, opp_def, is_home, h2h, is_playoffs, splits, team_elo, opp_elo)
     feature_cols = _MODELS["_features"]
 
     base_X = np.array([feat_row.get(c, 0.0) for c in feature_cols])

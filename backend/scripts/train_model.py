@@ -84,6 +84,31 @@ def _classify_positions(logs: pd.DataFrame) -> pd.DataFrame:
     return career[["player_id", "position"]]
 
 
+def _compute_team_elo(game_results: pd.DataFrame, k: float = 20.0, init: float = 1500.0) -> pd.DataFrame:
+    """
+    Compute ELO ratings for every team before each game they played.
+    game_results must have columns: game_date, game_id, team, opp, team_score, opp_score.
+    Returns a DataFrame with (game_id, team) → elo_before columns.
+    """
+    elo: dict[str, float] = {}
+    records = []
+
+    for _, row in game_results.sort_values("game_date").iterrows():
+        t, o = row["team"], row["opp"]
+        t_elo = elo.get(t, init)
+        o_elo = elo.get(o, init)
+
+        expected_t = 1.0 / (1.0 + 10 ** ((o_elo - t_elo) / 400.0))
+        actual_t   = 1.0 if row["team_score"] > row["opp_score"] else 0.5 if row["team_score"] == row["opp_score"] else 0.0
+
+        records.append({"game_id": row["game_id"], "team": t, "team_elo": t_elo, "opp_elo": o_elo})
+
+        elo[t] = t_elo + k * (actual_t - expected_t)
+        elo[o] = o_elo + k * ((1 - actual_t) - (1 - expected_t))
+
+    return pd.DataFrame(records)
+
+
 def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     conn = sqlite3.connect(DB_PATH)
 
@@ -114,20 +139,41 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
         GROUP BY opponent_abbreviation, season, season_type
     """, conn)
 
+    # Team-level scores per game — needed to compute ELO
+    game_scores = pd.read_sql_query("""
+        SELECT game_id, game_date, team_abbreviation AS team,
+               opponent_abbreviation AS opp,
+               SUM(pts) AS team_score
+        FROM player_game_logs
+        WHERE min >= 5
+        GROUP BY game_id, team_abbreviation, opponent_abbreviation, game_date
+    """, conn)
+
     conn.close()
     logs["game_date"] = pd.to_datetime(logs["game_date"])
+    game_scores["game_date"] = pd.to_datetime(game_scores["game_date"])
+
+    # Derive opponent score by joining on flipped team/opp
+    opp_scores = game_scores.rename(columns={"team": "opp", "opp": "team", "team_score": "opp_score"})[
+        ["game_id", "team", "opp_score"]
+    ]
+    game_results = game_scores.merge(opp_scores, on=["game_id", "team"], how="inner")
+
+    # Compute ELO per game (rating before that game)
+    print("  Computing team ELO ratings...")
+    elo_df = _compute_team_elo(game_results)
 
     # Classify each player into G/F/C by career play style
     positions = _classify_positions(logs)
     pos_counts = positions["position"].value_counts().to_dict()
     print(f"  Position split — G:{pos_counts.get('G',0)}  F:{pos_counts.get('F',0)}  C:{pos_counts.get('C',0)}")
 
-    return logs, def_stats, positions
+    return logs, def_stats, positions, elo_df
 
 
 # ── Feature engineering ───────────────────────────────────────────────────────
 
-def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame, positions: pd.DataFrame) -> pd.DataFrame:
+def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame, positions: pd.DataFrame, elo_df: pd.DataFrame) -> pd.DataFrame:
     print("Engineering features...")
 
     logs = logs.sort_values(["player_id", "game_date"]).reset_index(drop=True)
@@ -214,6 +260,15 @@ def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame, positions: pd.Da
     logs["opp_pos_blk"]  = logs["opp_pos_blk"].fillna(logs["opp_blk_pg"])
     logs["opp_pos_stl"]  = logs["opp_pos_stl"].fillna(logs["opp_stl_pg"])
 
+    # Team ELO — join on (game_id, team_abbreviation)
+    print("  Joining ELO features...")
+    elo_team = elo_df.rename(columns={"team": "team_abbreviation", "team_elo": "team_elo", "opp_elo": "opp_elo"})
+    logs = logs.merge(elo_team[["game_id", "team_abbreviation", "team_elo", "opp_elo"]],
+                      on=["game_id", "team_abbreviation"], how="left")
+    logs["team_elo"] = logs["team_elo"].fillna(1500.0)
+    logs["opp_elo"]  = logs["opp_elo"].fillna(1500.0)
+    logs["elo_diff"] = logs["team_elo"] - logs["opp_elo"]
+
     # Head-to-head history: rolling stats vs each specific opponent.
     # Sort per (player, opponent, date) so shift(1) excludes the current game.
     print("  Computing head-to-head features...")
@@ -255,6 +310,7 @@ def _feature_cols() -> list[str]:
     cols += ["opp_pos_pts", "opp_pos_ast", "opp_pos_reb", "opp_pos_fg3m", "opp_pos_blk", "opp_pos_stl"]
     for stat in ["pts", "ast", "reb"]:
         cols += [f"{stat}_vs_opp_last3", f"{stat}_vs_opp_avg"]
+    cols += ["team_elo", "opp_elo", "elo_diff"]
     return cols
 
 
@@ -319,10 +375,10 @@ def save_models(models: dict, metrics: dict) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    logs, def_stats, positions = load_data()
+    logs, def_stats, positions, elo_df = load_data()
     print(f"Loaded {len(logs):,} player-game rows")
 
-    df = build_features(logs, def_stats, positions)
+    df = build_features(logs, def_stats, positions, elo_df)
 
     print("\nTraining XGBoost models...")
     models, metrics = train_models(df)
