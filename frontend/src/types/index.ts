@@ -76,6 +76,8 @@ export type Snapshot = {
     home: number;
     away: number;
   }[];
+  isCloseGame: boolean;
+  predictedMargin: number;
 };
 
 export type SlateGame = {

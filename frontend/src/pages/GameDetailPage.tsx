@@ -160,6 +160,8 @@ function NBAScoreboard({
   tipoff,
   arena,
   broadcast,
+  isCloseGame,
+  predictedMargin,
 }: {
   quarter: number;
   clock: string;
@@ -171,10 +173,13 @@ function NBAScoreboard({
   tipoff: string;
   arena: string;
   broadcast: string;
+  isCloseGame?: boolean;
+  predictedMargin?: number;
 }) {
   const isFinal = status === "final";
   const isLive = status === "live";
   const isScheduled = !isFinal && !isLive;
+  const absMargin = Math.abs(predictedMargin ?? 0);
 
   const phaseLabel = isFinal
     ? "FINAL"
@@ -220,19 +225,28 @@ function NBAScoreboard({
         <TeamBlock team={awayTeam} predicted={awayPredicted} actualScore={awayTeam.score} />
 
         {/* Live / final score — shows actual game score only when game is in progress or final */}
-        <div className="flex items-center gap-4 md:gap-8">
-          {isScheduled ? (
-            <span className="font-display text-sm uppercase tracking-widest text-muted">Not Started</span>
-          ) : (
-            <>
-              <span className="font-display text-6xl tabular-nums leading-none text-white md:text-7xl">
-                {awayTeam.score}
-              </span>
-              <span className="text-2xl text-white/20">–</span>
-              <span className="font-display text-6xl tabular-nums leading-none text-white md:text-7xl">
-                {homeTeam.score}
-              </span>
-            </>
+        <div className="flex flex-col items-center gap-2">
+          <div className="flex items-center gap-4 md:gap-8">
+            {isScheduled ? (
+              <span className="font-display text-sm uppercase tracking-widest text-muted">Not Started</span>
+            ) : (
+              <>
+                <span className="font-display text-6xl tabular-nums leading-none text-white md:text-7xl">
+                  {awayTeam.score}
+                </span>
+                <span className="text-2xl text-white/20">–</span>
+                <span className="font-display text-6xl tabular-nums leading-none text-white md:text-7xl">
+                  {homeTeam.score}
+                </span>
+              </>
+            )}
+          </div>
+          {isCloseGame && (
+            <div className="rounded-full border border-yellow-400/40 bg-yellow-400/10 px-3 py-1 text-center">
+              <p className="text-[10px] font-semibold uppercase tracking-widest text-yellow-300">
+                Margin: {absMargin} pts — Too close to call
+              </p>
+            </div>
           )}
         </div>
 
@@ -349,6 +363,8 @@ export function GameDetailPage({
           tipoff={preview.tipoff}
           arena={preview.arena}
           broadcast={preview.broadcast}
+          isCloseGame={snapshot.isCloseGame}
+          predictedMargin={snapshot.predictedMargin}
         />
 
         <PlayerRoster

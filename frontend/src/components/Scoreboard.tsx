@@ -6,12 +6,15 @@ type ScoreboardProps = {
   clock: string;
   homeTeam: TeamProjection;
   awayTeam: TeamProjection;
+  isCloseGame?: boolean;
+  predictedMargin?: number;
 };
 
-export function Scoreboard({ quarter, clock, homeTeam, awayTeam }: ScoreboardProps) {
+export function Scoreboard({ quarter, clock, homeTeam, awayTeam, isCloseGame, predictedMargin }: ScoreboardProps) {
   const teamRows = [awayTeam, homeTeam];
   const phaseLabel = quarter === 0 ? "Pregame simulation" : `Q${quarter}`;
   const clockLabel = quarter === 0 ? "Model ready" : clock;
+  const absMargin = Math.abs(predictedMargin ?? 0);
 
   return (
     <motion.section
@@ -28,10 +31,19 @@ export function Scoreboard({ quarter, clock, homeTeam, awayTeam }: ScoreboardPro
             and coaching counters in real time.
           </p>
         </div>
-        <div className="rounded-2xl border border-white/10 bg-white/5 px-5 py-4 text-right">
-          <p className="text-xs uppercase tracking-[0.3em] text-muted">Game state</p>
-          <p className="mt-1 font-display text-3xl text-white">{phaseLabel}</p>
-          <p className="text-lg text-electric">{clockLabel}</p>
+        <div className="flex items-start gap-3">
+          {isCloseGame && (
+            <div className="rounded-2xl border border-yellow-400/30 bg-yellow-400/10 px-4 py-4 text-center">
+              <p className="text-xs uppercase tracking-[0.25em] text-yellow-300/80">Predicted margin</p>
+              <p className="mt-1 font-display text-2xl text-yellow-300">{absMargin} pts</p>
+              <p className="mt-1 text-xs text-yellow-300/60">Could go either way</p>
+            </div>
+          )}
+          <div className="rounded-2xl border border-white/10 bg-white/5 px-5 py-4 text-right">
+            <p className="text-xs uppercase tracking-[0.3em] text-muted">Game state</p>
+            <p className="mt-1 font-display text-3xl text-white">{phaseLabel}</p>
+            <p className="text-lg text-electric">{clockLabel}</p>
+          </div>
         </div>
       </div>
 

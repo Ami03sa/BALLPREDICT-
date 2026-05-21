@@ -141,6 +141,8 @@ export async function fetchSnapshot(gameId: string): Promise<Snapshot> {
     insights: data.insights,
     possessionFeed: data.possession_feed,
     winProbabilitySeries: data.win_probability_series,
+    isCloseGame: data.is_close_game ?? false,
+    predictedMargin: data.predicted_margin ?? 0,
   };
 }
 

@@ -105,6 +105,8 @@ class GameSnapshot(BaseModel):
     possession_feed: list[PossessionFeedItem]
     insights: list[InsightCard]
     win_probability_series: list[dict[str, float]]
+    is_close_game: bool = False
+    predicted_margin: int = 0
 
 
 class SimulationRequest(BaseModel):

@@ -550,6 +550,11 @@ class ProjectionService:
         home_total += _breakout_boost(home_player_projections, context.home_vegas_total)
         away_total += _breakout_boost(away_player_projections, context.away_vegas_total)
 
+        # Tie-breaker: a tied final score is not a valid prediction — home teams
+        # win ~59% of playoff games, so give them the edge when it's exactly equal.
+        if home_total == away_total:
+            home_total += 1
+
         # If a score was already locked for this game (from disk cache), use it
         # and never recompute — not on restart, not mid-game, never.
         game_id = context.game_id
@@ -588,6 +593,7 @@ class ProjectionService:
             }
         ]
 
+        margin = abs(home_total - away_total)
         return GameSnapshot(
             game_id=context.game_id,
             status=status,
@@ -600,6 +606,8 @@ class ProjectionService:
             possession_feed=possession_feed or default_feed,
             insights=insight_service.build_game_insights(context),
             win_probability_series=win_series,
+            is_close_game=margin <= 5,
+            predicted_margin=home_total - away_total,
         )
 
 
