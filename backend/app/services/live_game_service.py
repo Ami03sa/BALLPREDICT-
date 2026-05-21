@@ -69,10 +69,6 @@ class LiveGameService:
                 self._slate = slate
                 self._contexts = contexts
                 logger.info("Loaded %d live NBA game(s) from CDN.", len(contexts))
-                # Lock pre-game score predictions immediately using the clean startup
-                # context (no live player stats). This is the number that will be
-                # shown for the entire game regardless of restarts.
-                projection_service.lock_pregame_scores(contexts)
             else:
                 logger.warning("No NBA games found for today — slate will be empty.")
         except Exception as exc:

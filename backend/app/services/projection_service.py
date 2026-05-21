@@ -282,32 +282,7 @@ def _rescale_player_pts(proj: PlayerProjection, scale: float) -> PlayerProjectio
 
 
 class ProjectionService:
-    def lock_pregame_scores(self, contexts: dict) -> None:
-        """
-        Compute and persist pre-game score predictions for all games in contexts.
-        Skips games already in the cache so an existing lock is never overwritten.
-        """
-        changed = False
-        for game_id, context in contexts.items():
-            if game_id in _pregame_scores:
-                continue
-            try:
-                snapshot = self.build_snapshot(context, status="scheduled")
-                _pregame_scores[game_id] = [
-                    snapshot.home_team.final_score_mean,
-                    snapshot.away_team.final_score_mean,
-                ]
-                changed = True
-                logger.info(
-                    "Locked pre-game score for %s: %d-%d",
-                    game_id,
-                    snapshot.home_team.final_score_mean,
-                    snapshot.away_team.final_score_mean,
-                )
-            except Exception as exc:
-                logger.warning("Could not lock pre-game score for %s: %s", game_id, exc)
-        if changed:
-            _save_score_cache(_pregame_scores)
+    pass
 
     def build_snapshot(
         self,
@@ -550,14 +525,22 @@ class ProjectionService:
         home_total += _breakout_boost(home_player_projections, context.home_vegas_total)
         away_total += _breakout_boost(away_player_projections, context.away_vegas_total)
 
-        # If a score was already locked for this game (from disk cache), use it
-        # and never recompute — not on restart, not mid-game, never.
         game_id = context.game_id
-        if game_id in _pregame_scores:
-            home_total, away_total = _pregame_scores[game_id]
 
-        # Tie-breaker applied after cache read so it fixes stale cached ties too.
-        # Home teams win ~59% of NBA playoff games — they get the edge.
+        if status in ("live", "final"):
+            # Game is in progress or over — lock the score on first live snapshot
+            # so it never changes mid-game or on restart.
+            if game_id not in _pregame_scores:
+                _pregame_scores[game_id] = [home_total, away_total]
+                _save_score_cache(_pregame_scores)
+                logger.info(
+                    "Locked live score for %s: %d-%d",
+                    game_id, home_total, away_total,
+                )
+            home_total, away_total = _pregame_scores[game_id]
+        # Pre-game (status="scheduled"): predictions update freely on each poll.
+
+        # Tie-breaker: home teams win ~59% of NBA playoff games.
         if home_total == away_total:
             home_total += 1
 
