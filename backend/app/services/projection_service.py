@@ -12,6 +12,9 @@ _GAME_MINUTES = 240.0
 _LEAGUE_AVG_DEF_RTG = 114.0  # League-average defensive rating used for opp-adjustment
 _BREAKOUT_THRESHOLD = 30.0   # Points threshold for "breakout" classification
 
+# Pre-game score predictions locked per game_id — never updated once set.
+_pregame_scores: dict[str, tuple[int, int]] = {}
+
 
 def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
     """
@@ -494,22 +497,17 @@ class ProjectionService:
         home_total += _breakout_boost(home_player_projections, context.home_vegas_total)
         away_total += _breakout_boost(away_player_projections, context.away_vegas_total)
 
-        # During a live game, anchor the predicted final using the live score so the
-        # number doesn't flip as individual player projections fluctuate between polls.
-        # Formula: final = live_score + model_estimate × fraction_remaining
-        # This moves smoothly upward as real points accumulate, stays stable otherwise.
+        # Lock the predicted final score to the pre-game estimate.
+        # Once cached (before tip-off), it never changes — even as live data
+        # comes in. Win probability and player stats still update live.
+        game_id = context.game_id
         live_home = context.home_team.score
         live_away = context.away_team.score
-        if context.quarter >= 1 and (live_home > 0 or live_away > 0):
-            try:
-                parts = context.clock.split(":")
-                mins_left_in_q = int(parts[0]) + int(parts[1]) / 60
-            except Exception:
-                mins_left_in_q = 0.0
-            mins_played = (context.quarter - 1) * 12 + max(0.0, 12.0 - mins_left_in_q)
-            fraction_remaining = max(0.0, 1.0 - mins_played / 48.0)
-            home_total = live_home + round(home_total * fraction_remaining)
-            away_total = live_away + round(away_total * fraction_remaining)
+        is_live = context.quarter >= 1 and (live_home > 0 or live_away > 0)
+        if game_id in _pregame_scores:
+            home_total, away_total = _pregame_scores[game_id]
+        elif not is_live:
+            _pregame_scores[game_id] = (home_total, away_total)
 
         home_projection = prediction_engine.project_team(
             context, context.home_team, context.away_team, True, player_score_sum=home_total
