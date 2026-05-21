@@ -542,14 +542,11 @@ class ProjectionService:
         home_total += _breakout_boost(home_player_projections, context.home_vegas_total)
         away_total += _breakout_boost(away_player_projections, context.away_vegas_total)
 
-        # Lock the predicted final score on the first computation for this game.
-        # Persisted to disk so backend restarts don't change the number mid-game.
+        # If a score was already locked for this game (from disk cache), use it
+        # and never recompute — not on restart, not mid-game, never.
         game_id = context.game_id
         if game_id in _pregame_scores:
             home_total, away_total = _pregame_scores[game_id]
-        else:
-            _pregame_scores[game_id] = [home_total, away_total]
-            _save_score_cache(_pregame_scores)
 
         home_projection = prediction_engine.project_team(
             context, context.home_team, context.away_team, True, player_score_sum=home_total
