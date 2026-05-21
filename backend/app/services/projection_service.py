@@ -550,16 +550,16 @@ class ProjectionService:
         home_total += _breakout_boost(home_player_projections, context.home_vegas_total)
         away_total += _breakout_boost(away_player_projections, context.away_vegas_total)
 
-        # Tie-breaker: a tied final score is not a valid prediction — home teams
-        # win ~59% of playoff games, so give them the edge when it's exactly equal.
-        if home_total == away_total:
-            home_total += 1
-
         # If a score was already locked for this game (from disk cache), use it
         # and never recompute — not on restart, not mid-game, never.
         game_id = context.game_id
         if game_id in _pregame_scores:
             home_total, away_total = _pregame_scores[game_id]
+
+        # Tie-breaker applied after cache read so it fixes stale cached ties too.
+        # Home teams win ~59% of NBA playoff games — they get the edge.
+        if home_total == away_total:
+            home_total += 1
 
         home_projection = prediction_engine.project_team(
             context, context.home_team, context.away_team, True, player_score_sum=home_total
