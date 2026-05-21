@@ -553,13 +553,14 @@ class PredictionEngine:
             proj_tov  = round(preds["tov"]["mean"],  1)
             proj_fg3m = round(preds["fg3m"]["mean"], 1)
 
-            # Blend with real market props only (45% weight). Synthetic DB lines are
-            # skipped — full-game historical averages misalign with in-game quarter
-            # projections and inflate totals.
+            # Blend with prop lines:
+            #   Real market props (Odds API)  → 45% weight  — sharp money signal
+            #   Synthetic DB props (free)     → 15% weight  — light historical anchor
             for stat_key, proj_var in [("pts", "proj_pts"), ("reb", "proj_reb"), ("ast", "proj_ast"), ("fg3m", "proj_fg3m")]:
                 prop, is_market = _prop_line(player.player_name, stat_key, player.player_id)
-                if prop is not None and prop > 0 and is_market:
-                    blended = round(0.55 * locals()[proj_var] + 0.45 * prop, 1)
+                if prop is not None and prop > 0:
+                    w = 0.45 if is_market else 0.15
+                    blended = round((1 - w) * locals()[proj_var] + w * prop, 1)
                     if stat_key == "pts":
                         proj_pts = blended
                     elif stat_key == "reb":
