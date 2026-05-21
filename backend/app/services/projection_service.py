@@ -1,7 +1,10 @@
 import json
+import logging
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 from app.schemas.game import BreakoutStats, ConfidenceBand, GameSnapshot, PlayerProjection, StatLine
 from app.services.insight_service import insight_service
@@ -279,6 +282,33 @@ def _rescale_player_pts(proj: PlayerProjection, scale: float) -> PlayerProjectio
 
 
 class ProjectionService:
+    def lock_pregame_scores(self, contexts: dict) -> None:
+        """
+        Compute and persist pre-game score predictions for all games in contexts.
+        Skips games already in the cache so an existing lock is never overwritten.
+        """
+        changed = False
+        for game_id, context in contexts.items():
+            if game_id in _pregame_scores:
+                continue
+            try:
+                snapshot = self.build_snapshot(context, status="scheduled")
+                _pregame_scores[game_id] = [
+                    snapshot.home_team.final_score_mean,
+                    snapshot.away_team.final_score_mean,
+                ]
+                changed = True
+                logger.info(
+                    "Locked pre-game score for %s: %d-%d",
+                    game_id,
+                    snapshot.home_team.final_score_mean,
+                    snapshot.away_team.final_score_mean,
+                )
+            except Exception as exc:
+                logger.warning("Could not lock pre-game score for %s: %s", game_id, exc)
+        if changed:
+            _save_score_cache(_pregame_scores)
+
     def build_snapshot(
         self,
         context: GameContext,
