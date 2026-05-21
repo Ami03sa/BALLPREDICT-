@@ -81,6 +81,61 @@ def _fetch_game_logs(date_from: str, season: str, season_type: str) -> list[dict
     return [dict(zip(headers, r)) for r in rows]
 
 
+def _fetch_advanced_logs(season: str, season_type: str, date_from: str = "") -> dict:
+    """Fetch player game logs with Advanced measure type to get USG_PCT."""
+    print(f"  Fetching advanced stats ({season} {season_type}) ...")
+    data = _get("playergamelogs", {
+        "MeasureType": "Advanced",
+        "SeasonType": season_type,
+        "Season": season,
+        "DateFrom": date_from,
+        "DateTo": "",
+        "LeagueID": "00",
+        "PlayerOrTeam": "P",
+        "PerMode": "PerGame",
+    })
+    rs = next((r for r in data.get("resultSets", []) if r.get("name") == "PlayerGameLogs"), {})
+    headers = rs.get("headers", [])
+    rows = rs.get("rowSet", [])
+    print(f"    → {len(rows)} advanced rows")
+    return {
+        (str(r[headers.index("PLAYER_ID")]), str(r[headers.index("GAME_ID")])): float(r[headers.index("USG_PCT")] or 0.0)
+        for r in rows
+        if "USG_PCT" in headers and "PLAYER_ID" in headers and "GAME_ID" in headers
+    }
+
+
+def _update_usg_pct(conn: sqlite3.Connection, usg_map: dict) -> int:
+    """Update usg_pct for existing rows from a {(player_id, game_id): usg_pct} map."""
+    updated = 0
+    for (player_id, game_id), usg in usg_map.items():
+        cur = conn.execute(
+            "UPDATE player_game_logs SET usg_pct = ? WHERE player_id = ? AND game_id = ? AND usg_pct = 0.0",
+            (usg, player_id, game_id),
+        )
+        updated += cur.rowcount
+    conn.commit()
+    return updated
+
+
+def _backfill_usg_pct(conn: sqlite3.Connection) -> None:
+    """One-time backfill: fetch usage rate for all seasons already in the DB."""
+    pairs = conn.execute(
+        "SELECT DISTINCT season, season_type FROM player_game_logs WHERE usg_pct = 0.0"
+    ).fetchall()
+    if not pairs:
+        print("  Usage rate already fully backfilled.")
+        return
+    print(f"  Backfilling usg_pct for {len(pairs)} season/type pairs...")
+    for season, season_type in pairs:
+        try:
+            usg_map = _fetch_advanced_logs(season, season_type)
+            n = _update_usg_pct(conn, usg_map)
+            print(f"    → {n} rows updated ({season} {season_type})")
+        except Exception as e:
+            print(f"    ✗ Failed ({season} {season_type}): {e}")
+
+
 def _parse_log_row(row: dict) -> dict | None:
     """Convert a leaguegamelog row into the DB schema."""
     matchup = row.get("MATCHUP", "")
@@ -327,6 +382,18 @@ def refresh(force_date: str | None = None) -> None:
             print(f"    ✗ {season_type} logs failed: {e}")
 
     print(f"\nTotal new game logs inserted: {total_inserted}")
+
+    # Fetch and store usage rate for new games
+    for season_type in ["Regular Season", "Playoffs"]:
+        try:
+            usg_map = _fetch_advanced_logs(season, season_type, date_from=date_from)
+            n = _update_usg_pct(conn, usg_map)
+            print(f"    → {n} usage rate rows updated ({season_type})")
+        except Exception as e:
+            print(f"  ✗ Usage rate ({season_type}) failed: {e}")
+
+    # Backfill any existing rows missing usage rate
+    _backfill_usg_pct(conn)
 
     # Always refresh defensive stats for current season (ratings shift each game)
     for season_type in ["Regular Season", "Playoffs"]:

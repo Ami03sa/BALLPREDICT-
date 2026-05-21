@@ -32,7 +32,7 @@ MODEL_DIR = Path(__file__).parent.parent / "data" / "models"
 
 TARGETS = ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov"]
 
-ROLL_STATS = ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov", "min", "fg_pct", "fg3_pct"]
+ROLL_STATS = ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov", "min", "fg_pct", "fg3_pct", "usg_pct"]
 
 XGB_PARAMS = dict(
     n_estimators=300,
@@ -90,7 +90,7 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     logs = pd.read_sql_query("""
         SELECT player_id, player_name, team_abbreviation, opponent_abbreviation,
                game_id, game_date, season, season_type, home_away,
-               min, pts, ast, reb, stl, blk, tov, fg3m, fg_pct, fg3_pct
+               min, pts, ast, reb, stl, blk, tov, fg3m, fg_pct, fg3_pct, usg_pct
         FROM player_game_logs
         WHERE min >= 5
         ORDER BY player_id, game_date

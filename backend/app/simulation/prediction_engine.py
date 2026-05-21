@@ -180,7 +180,7 @@ def _player_history(player_id: str) -> dict:
         # artificially — skip them and use the real played games immediately before.
         rows = conn.execute(
             """
-            SELECT pts, ast, reb, stl, blk, fg3m, tov, min, fg_pct, fg3_pct
+            SELECT pts, ast, reb, stl, blk, fg3m, tov, min, fg_pct, fg3_pct, usg_pct
             FROM player_game_logs
             WHERE player_id = ? AND min > 0
             ORDER BY game_date DESC
@@ -193,7 +193,7 @@ def _player_history(player_id: str) -> dict:
         return {}
     if not rows:
         return {}
-    cols = ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov", "min", "fg_pct", "fg3_pct"]
+    cols = ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov", "min", "fg_pct", "fg3_pct", "usg_pct"]
     return {c: [r[i] for r in rows] for i, c in enumerate(cols)}
 
 
@@ -393,7 +393,7 @@ def _build_features(
 ) -> dict:
     row: dict[str, float] = {}
 
-    for stat in ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov", "min", "fg_pct", "fg3_pct"]:
+    for stat in ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov", "min", "fg_pct", "fg3_pct", "usg_pct"]:
         vals = history.get(stat, [])
         row[f"{stat}_last5"]      = _rolling(vals, 5)
         row[f"{stat}_last10"]     = _rolling(vals, 10)
@@ -454,6 +454,7 @@ _NOISE_SCALES: dict[str, float] = {
     "min_last5": 2.5,   "min_last10": 1.5,   "min_season_avg": 1.0,
     "fg_pct_last5": 0.030,  "fg_pct_last10": 0.018,  "fg_pct_season_avg": 0.010,
     "fg3_pct_last5": 0.040, "fg3_pct_last10": 0.025, "fg3_pct_season_avg": 0.015,
+    "usg_pct_last5": 0.03,  "usg_pct_last10": 0.02,  "usg_pct_season_avg": 0.01,
     "opp_pts_per_game": 1.5, "opp_fg_pct": 0.020, "opp_fg3_pct": 0.025,
     "opp_ast_pg": 0.4, "opp_reb_pg": 0.5, "opp_fg3m_pg": 0.15, "opp_blk_pg": 0.08, "opp_stl_pg": 0.10,
     "opp_pos_pts": 1.5, "opp_pos_ast": 0.4, "opp_pos_reb": 0.5, "opp_pos_fg3m": 0.15, "opp_pos_blk": 0.08, "opp_pos_stl": 0.10,
