@@ -1,3 +1,4 @@
+import json
 import sqlite3
 from datetime import date, timedelta
 from pathlib import Path
@@ -8,12 +9,26 @@ from app.simulation.prediction_engine import prediction_engine
 from app.simulation.state import GameContext
 
 _DB_PATH = Path(__file__).parent.parent.parent / "data" / "nba_training.db"
+_SCORE_CACHE_PATH = Path(__file__).parent.parent.parent / "data" / "score_cache.json"
 _GAME_MINUTES = 240.0
 _LEAGUE_AVG_DEF_RTG = 114.0  # League-average defensive rating used for opp-adjustment
 _BREAKOUT_THRESHOLD = 30.0   # Points threshold for "breakout" classification
 
-# Pre-game score predictions locked per game_id — never updated once set.
-_pregame_scores: dict[str, tuple[int, int]] = {}
+# Pre-game score predictions locked per game_id — persisted to disk so backend
+# restarts don't cause the predicted score to change mid-game.
+def _load_score_cache() -> dict[str, list[int]]:
+    try:
+        return json.loads(_SCORE_CACHE_PATH.read_text()) if _SCORE_CACHE_PATH.exists() else {}
+    except Exception:
+        return {}
+
+def _save_score_cache(cache: dict) -> None:
+    try:
+        _SCORE_CACHE_PATH.write_text(json.dumps(cache))
+    except Exception:
+        pass
+
+_pregame_scores: dict[str, list[int]] = _load_score_cache()
 
 
 def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
@@ -498,14 +513,13 @@ class ProjectionService:
         away_total += _breakout_boost(away_player_projections, context.away_vegas_total)
 
         # Lock the predicted final score on the first computation for this game.
-        # Cached immediately whether pre-game or already live (e.g. after restart).
-        # Every subsequent call returns the same numbers. Win probability and
-        # player stats still update live — only the final score is frozen.
+        # Persisted to disk so backend restarts don't change the number mid-game.
         game_id = context.game_id
         if game_id in _pregame_scores:
             home_total, away_total = _pregame_scores[game_id]
         else:
-            _pregame_scores[game_id] = (home_total, away_total)
+            _pregame_scores[game_id] = [home_total, away_total]
+            _save_score_cache(_pregame_scores)
 
         home_projection = prediction_engine.project_team(
             context, context.home_team, context.away_team, True, player_score_sum=home_total

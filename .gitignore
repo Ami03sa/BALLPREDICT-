@@ -15,3 +15,5 @@ coverage/
 
 data/nba_training.db
 backend/data/models/
+backend/data/score_cache.json
+backend/data/refresh.log
