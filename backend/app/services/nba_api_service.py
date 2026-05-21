@@ -4,6 +4,7 @@ Fetches live game data via nba_live_client (stats.nba.com + NBA CDN).
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import sqlite3
 from datetime import datetime, timedelta
@@ -12,6 +13,24 @@ from pathlib import Path
 from app.simulation.state import GameContext, PlayerGameState, TeamGameState
 
 _DB_PATH = Path(__file__).parent.parent.parent / "data" / "nba_training.db"
+_VEGAS_CACHE_PATH = Path(__file__).parent.parent.parent / "data" / "vegas_cache.json"
+
+# Vegas implied totals locked per game_id at first startup.
+# Keyed by game_id → {"home": float, "away": float}.
+# Written once; never overwritten so ESPN going dark mid-game doesn't lose the line.
+def _load_vegas_cache() -> dict[str, dict]:
+    try:
+        return json.loads(_VEGAS_CACHE_PATH.read_text()) if _VEGAS_CACHE_PATH.exists() else {}
+    except Exception:
+        return {}
+
+def _save_vegas_cache(cache: dict) -> None:
+    try:
+        _VEGAS_CACHE_PATH.write_text(json.dumps(cache))
+    except Exception:
+        pass
+
+_vegas_cache: dict[str, dict] = _load_vegas_cache()
 
 
 def _recent_dnp(player_id: str) -> bool:
@@ -506,11 +525,22 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
         # Formula: home_implied = (total - home_spread) / 2
         #          away_implied = (total + home_spread) / 2
         # e.g. total=216.5, home_spread=-6.5 → home=111.5, away=105.0
+        #
+        # Write to disk cache on first encounter; read from cache if ESPN has
+        # already taken the line down (game live / finished).
         game_total = vegas_totals.get((home_tc, away_tc))
         if game_total:
             home_spread = vegas_spreads.get((home_tc, away_tc), 0.0)
             home_vegas = round((game_total - home_spread) / 2.0, 2)
             away_vegas = round((game_total + home_spread) / 2.0, 2)
+            if game_id not in _vegas_cache:
+                _vegas_cache[game_id] = {"home": home_vegas, "away": away_vegas}
+                _save_vegas_cache(_vegas_cache)
+                logger.info("Vegas odds locked for %s: home=%.1f away=%.1f", game_id, home_vegas, away_vegas)
+        elif game_id in _vegas_cache:
+            home_vegas = _vegas_cache[game_id]["home"]
+            away_vegas = _vegas_cache[game_id]["away"]
+            logger.info("Vegas odds restored from cache for %s: home=%.1f away=%.1f", game_id, home_vegas, away_vegas)
         else:
             home_vegas = None
             away_vegas = None
