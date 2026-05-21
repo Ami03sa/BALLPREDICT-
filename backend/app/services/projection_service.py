@@ -494,6 +494,23 @@ class ProjectionService:
         home_total += _breakout_boost(home_player_projections, context.home_vegas_total)
         away_total += _breakout_boost(away_player_projections, context.away_vegas_total)
 
+        # During a live game, anchor the predicted final using the live score so the
+        # number doesn't flip as individual player projections fluctuate between polls.
+        # Formula: final = live_score + model_estimate × fraction_remaining
+        # This moves smoothly upward as real points accumulate, stays stable otherwise.
+        live_home = context.home_team.score
+        live_away = context.away_team.score
+        if context.quarter >= 1 and (live_home > 0 or live_away > 0):
+            try:
+                parts = context.clock.split(":")
+                mins_left_in_q = int(parts[0]) + int(parts[1]) / 60
+            except Exception:
+                mins_left_in_q = 0.0
+            mins_played = (context.quarter - 1) * 12 + max(0.0, 12.0 - mins_left_in_q)
+            fraction_remaining = max(0.0, 1.0 - mins_played / 48.0)
+            home_total = live_home + round(home_total * fraction_remaining)
+            away_total = live_away + round(away_total * fraction_remaining)
+
         home_projection = prediction_engine.project_team(
             context, context.home_team, context.away_team, True, player_score_sum=home_total
         )
