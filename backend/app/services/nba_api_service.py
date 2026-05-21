@@ -433,7 +433,7 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
     # Fetch player props and push into prediction engine.
     # Real market props (Odds API) used at 45% blend weight.
     # Synthetic DB props (last5×0.65 + season×0.35) used at 30% as automatic fallback.
-    from app.simulation.prediction_engine import set_player_props, _load_synthetic_props
+    from app.simulation.prediction_engine import _load_synthetic_props, set_player_props
     if event_ids and settings.odds_api_key:
         eids = list(event_ids.values())
         player_props = await nba_live_client.fetch_player_props_bulk(settings.odds_api_key, eids)

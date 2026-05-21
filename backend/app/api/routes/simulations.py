@@ -3,13 +3,15 @@ from fastapi import APIRouter
 from app.schemas.game import SeriesSimulationRequest, SimulationRequest
 from app.services.live_game_service import live_game_service
 
-
 router = APIRouter(prefix="/simulations", tags=["simulations"])
-
 
 @router.post("/game")
 async def simulate_game(payload: SimulationRequest):
-    return await live_game_service.simulate_matchup(payload.home_team, payload.away_team, payload.strategy_tags)
+    return await live_game_service.simulate_matchup(
+        payload.home_team,
+        payload.away_team,
+        payload.strategy_tags,
+    )
 
 
 @router.post("/series")

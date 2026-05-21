@@ -22,7 +22,6 @@ import json
 import sqlite3
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 import xgboost as xgb
 from sklearn.metrics import mean_absolute_error, mean_squared_error

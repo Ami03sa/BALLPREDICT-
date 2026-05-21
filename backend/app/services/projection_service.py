@@ -6,7 +6,13 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-from app.schemas.game import BreakoutStats, ConfidenceBand, GameSnapshot, PlayerProjection, StatLine
+from app.schemas.game import (
+    BreakoutStats,
+    ConfidenceBand,
+    GameSnapshot,
+    PlayerProjection,
+    StatLine,
+)
 from app.services.insight_service import insight_service
 from app.simulation.prediction_engine import prediction_engine
 from app.simulation.state import GameContext

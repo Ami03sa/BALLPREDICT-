@@ -6,6 +6,8 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
+TEAMS_ID_FK = ForeignKey("teams.id")
+
 
 class Team(Base):
     __tablename__ = "teams"

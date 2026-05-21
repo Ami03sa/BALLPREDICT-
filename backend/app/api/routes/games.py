@@ -2,7 +2,6 @@ from fastapi import APIRouter
 
 from app.services.live_game_service import live_game_service
 
-
 router = APIRouter(prefix="/games", tags=["games"])
 
 
