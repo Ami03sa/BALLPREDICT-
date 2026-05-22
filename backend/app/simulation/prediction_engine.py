@@ -360,6 +360,55 @@ def _player_vs_opp(player_id: str, opponent_id: str) -> dict:
         return {}
 
 
+def _series_context(team_id: str, opp_id: str, is_playoffs: bool) -> dict:
+    """
+    Returns series_game_num, team_series_wins, opp_series_wins, series_advantage
+    for the current playoff matchup by counting games already in the DB.
+    Returns neutral defaults for non-playoff games.
+    """
+    defaults = {"series_game_num": 1, "team_series_wins": 0, "opp_series_wins": 0, "series_advantage": 0}
+    if not is_playoffs or not _DB_PATH.exists():
+        return defaults
+    try:
+        conn = sqlite3.connect(_DB_PATH)
+        season_row = conn.execute("SELECT MAX(season) FROM player_game_logs").fetchone()
+        season = season_row[0] if season_row else None
+        if not season:
+            conn.close()
+            return defaults
+
+        t = team_id.upper()
+        o = opp_id.upper()
+        # Get all games between these two teams this postseason
+        rows = conn.execute("""
+            SELECT g.game_id, SUM(g.pts) AS team_score, SUM(og.pts) AS opp_score
+            FROM player_game_logs g
+            JOIN player_game_logs og ON og.game_id = g.game_id
+                AND og.team_abbreviation = ?
+            WHERE g.team_abbreviation = ?
+              AND g.opponent_abbreviation = ?
+              AND g.season = ?
+              AND g.season_type = 'Playoffs'
+              AND g.min >= 5
+            GROUP BY g.game_id
+            ORDER BY MIN(g.game_date)
+        """, (o, t, o, season)).fetchall()
+        conn.close()
+
+        games_played = len(rows)
+        team_wins = sum(1 for r in rows if r[1] > r[2])
+        opp_wins  = sum(1 for r in rows if r[2] > r[1])
+        adv = 1 if team_wins > opp_wins else (-1 if team_wins < opp_wins else 0)
+        return {
+            "series_game_num":  games_played + 1,
+            "team_series_wins": team_wins,
+            "opp_series_wins":  opp_wins,
+            "series_advantage": adv,
+        }
+    except Exception:
+        return defaults
+
+
 def _home_away_splits(player_id: str) -> dict:
     """Career home and away scoring averages."""
     if not _DB_PATH.exists():
@@ -392,6 +441,7 @@ def _build_features(
     splits: dict | None = None,
     team_elo: float = 1500.0,
     opp_elo: float = 1500.0,
+    series: dict | None = None,
 ) -> dict:
     row: dict[str, float] = {}
 
@@ -446,6 +496,13 @@ def _build_features(
     row["opp_elo"]  = opp_elo
     row["elo_diff"] = team_elo - opp_elo
 
+    # Playoff series context — which game in the series, and who's leading
+    s = series or {}
+    row["series_game_num"]  = float(s.get("series_game_num",  1))
+    row["team_series_wins"] = float(s.get("team_series_wins", 0))
+    row["opp_series_wins"]  = float(s.get("opp_series_wins",  0))
+    row["series_advantage"] = float(s.get("series_advantage", 0))
+
     return row
 
 
@@ -470,6 +527,7 @@ _NOISE_SCALES: dict[str, float] = {
     "home_pts_avg": 2.0, "away_pts_avg": 2.0,
     "pts_vs_opp_last3": 4.5, "pts_vs_opp_avg": 2.5,
     "team_elo": 15.0, "opp_elo": 15.0, "elo_diff": 20.0,
+    "series_game_num": 0.0, "team_series_wins": 0.0, "opp_series_wins": 0.0, "series_advantage": 0.0,
     "ast_vs_opp_last3": 1.5, "ast_vs_opp_avg": 0.8,
     "reb_vs_opp_last3": 2.0, "reb_vs_opp_avg": 1.0,
 }
@@ -545,7 +603,8 @@ def _xgb_predict(player: PlayerGameState, opponent_id: str, is_home: bool, is_pl
     opp_id_upper  = opponent_id.upper()
     team_elo = elo_ratings.get(team_id_upper, 1500.0)
     opp_elo  = elo_ratings.get(opp_id_upper, 1500.0)
-    feat_row = _build_features(player, history, opp_def, is_home, h2h, is_playoffs, splits, team_elo, opp_elo)
+    series   = _series_context(team_id_upper, opp_id_upper, is_playoffs)
+    feat_row = _build_features(player, history, opp_def, is_home, h2h, is_playoffs, splits, team_elo, opp_elo, series)
     feature_cols = _MODELS["_features"]
 
     base_X = np.array([feat_row.get(c, 0.0) for c in feature_cols])
