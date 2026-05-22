@@ -63,22 +63,25 @@ def _latest_date_in_db(conn: sqlite3.Connection) -> str:
 def _fetch_game_logs(date_from: str, season: str, season_type: str) -> list[dict]:
     """Fetch all player game logs for a season/type starting from date_from."""
     print(f"  Fetching {season} {season_type} logs from {date_from} ...")
-    data = _get("leaguegamelog", {
-        "Counter": 0,
+    # playergamelogs is more up-to-date than leaguegamelog (syncs faster after games)
+    data = _get("playergamelogs", {
         "DateFrom": date_from,
         "DateTo": "",
-        "Direction": "ASC",
-        "LeagueID": "00",
-        "PlayerOrTeam": "P",
-        "Season": season,
-        "SeasonType": season_type,
-        "Sorter": "DATE",
+        "GameScope": "", "GameSegment": "", "LastNGames": "0",
+        "LeagueID": "00", "Location": "", "MeasureType": "Base",
+        "Month": "0", "OpponentTeamID": "0", "Outcome": "", "PORound": "0",
+        "PerMode": "PerGame", "Period": "0", "PlayerExperience": "",
+        "PlayerPosition": "", "PlusMinus": "N", "Rank": "N",
+        "Season": season, "SeasonSegment": "", "SeasonType": season_type,
+        "ShotClockRange": "", "StarterBench": "", "TeamID": "0",
+        "TwoWay": "0", "VsConference": "", "VsDivision": "",
     })
-    rs = next((r for r in data.get("resultSets", []) if r["name"] == "LeagueGameLog"), {})
+    rs = next((r for r in data.get("resultSets", []) if r["name"] == "PlayerGameLogs"), {})
     headers = rs.get("headers", [])
     rows = rs.get("rowSet", [])
     print(f"    → {len(rows)} rows")
-    return [dict(zip(headers, r)) for r in rows]
+    # Tag each row with season_type so _parse_log_row can use it
+    return [{**dict(zip(headers, r)), "_season_type": season_type} for r in rows]
 
 
 def _fetch_advanced_logs(season: str, season_type: str, date_from: str = "") -> dict:
@@ -137,7 +140,7 @@ def _backfill_usg_pct(conn: sqlite3.Connection) -> None:
 
 
 def _parse_log_row(row: dict) -> dict | None:
-    """Convert a leaguegamelog row into the DB schema."""
+    """Convert a playergamelogs or leaguegamelog row into the DB schema."""
     matchup = row.get("MATCHUP", "")
     # "OKC vs. SAS" → home, "OKC @ SAS" → away
     if " vs. " in matchup:
@@ -153,25 +156,39 @@ def _parse_log_row(row: dict) -> dict | None:
     else:
         return None
 
+    # playergamelogs uses TEAM_ABBREVIATION directly; leaguegamelog uses TEAM_ABBREVIATION too
+    if "TEAM_ABBREVIATION" in row:
+        team_abbr = row["TEAM_ABBREVIATION"]
+
     raw_min = row.get("MIN")
     try:
-        minutes = float(raw_min) if raw_min is not None else 0.0
+        # playergamelogs returns MIN as float; leaguegamelog may return "33:20" string
+        if isinstance(raw_min, str) and ":" in raw_min:
+            parts_m = raw_min.split(":")
+            minutes = float(parts_m[0]) + float(parts_m[1]) / 60
+        else:
+            minutes = float(raw_min) if raw_min is not None else 0.0
     except (ValueError, TypeError):
         minutes = 0.0
 
-    # Parse season from SEASON_ID (e.g. "22024" → "2024-25")
-    sid = str(row.get("SEASON_ID", ""))
-    if len(sid) >= 5:
-        yr = int(sid[1:5])
-        season_str = f"{yr}-{str(yr + 1)[2:]}"
-    else:
-        season_str = _current_season()
+    # SEASON_YEAR = "2025-26" (playergamelogs) or SEASON_ID = "22025" (leaguegamelog)
+    season_str = row.get("SEASON_YEAR") or None
+    if not season_str:
+        sid = str(row.get("SEASON_ID", ""))
+        if len(sid) >= 5:
+            yr = int(sid[1:5])
+            season_str = f"{yr}-{str(yr + 1)[2:]}"
+        else:
+            season_str = _current_season()
 
     # game_date comes as "2025-06-22T00:00:00" or "2025-06-22"
     raw_date = str(row.get("GAME_DATE", ""))[:10]
 
     fg_pct = row.get("FG_PCT")
     fg3_pct = row.get("FG3_PCT")
+
+    # season_type is passed by the caller via _upsert_logs or read from row
+    row_season_type = row.get("_season_type", row.get("SEASON_TYPE", "Regular Season"))
 
     return {
         "player_id":             str(row.get("PLAYER_ID", "")),
@@ -181,7 +198,7 @@ def _parse_log_row(row: dict) -> dict | None:
         "game_id":               str(row.get("GAME_ID", "")),
         "game_date":             raw_date,
         "season":                season_str,
-        "season_type":           season_type,
+        "season_type":           row_season_type,
         "home_away":             home_away,
         "min":                   minutes,
         "pts":                   float(row.get("PTS") or 0),
