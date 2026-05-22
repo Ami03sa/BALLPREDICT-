@@ -360,26 +360,29 @@ def _player_vs_opp(player_id: str, opponent_id: str) -> dict:
         return {}
 
 
+_SERIES_CACHE: dict[tuple, dict] = {}
+
 def _series_context(team_id: str, opp_id: str, is_playoffs: bool) -> dict:
     """
-    Returns series_game_num, team_series_wins, opp_series_wins, series_advantage
-    for the current playoff matchup by counting games already in the DB.
-    Returns neutral defaults for non-playoff games.
+    Returns series_game_num, team_series_wins, opp_series_wins, series_advantage.
+    Result is cached per matchup so DB is hit once per game, not once per player.
     """
     defaults = {"series_game_num": 1, "team_series_wins": 0, "opp_series_wins": 0, "series_advantage": 0}
     if not is_playoffs or not _DB_PATH.exists():
         return defaults
+
+    t, o = team_id.upper(), opp_id.upper()
+    cache_key = (t, o)
+    if cache_key in _SERIES_CACHE:
+        return _SERIES_CACHE[cache_key]
+
     try:
         conn = sqlite3.connect(_DB_PATH)
-        season_row = conn.execute("SELECT MAX(season) FROM player_game_logs").fetchone()
-        season = season_row[0] if season_row else None
+        season = (conn.execute("SELECT MAX(season) FROM player_game_logs").fetchone() or [None])[0]
         if not season:
             conn.close()
             return defaults
 
-        t = team_id.upper()
-        o = opp_id.upper()
-        # Get all games between these two teams this postseason
         rows = conn.execute("""
             SELECT g.game_id, SUM(g.pts) AS team_score, SUM(og.pts) AS opp_score
             FROM player_game_logs g
@@ -399,12 +402,14 @@ def _series_context(team_id: str, opp_id: str, is_playoffs: bool) -> dict:
         team_wins = sum(1 for r in rows if r[1] > r[2])
         opp_wins  = sum(1 for r in rows if r[2] > r[1])
         adv = 1 if team_wins > opp_wins else (-1 if team_wins < opp_wins else 0)
-        return {
+        result = {
             "series_game_num":  games_played + 1,
             "team_series_wins": team_wins,
             "opp_series_wins":  opp_wins,
             "series_advantage": adv,
         }
+        _SERIES_CACHE[cache_key] = result
+        return result
     except Exception:
         return defaults
 
