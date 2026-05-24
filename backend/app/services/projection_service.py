@@ -15,6 +15,8 @@ _DB_PATH = Path(__file__).parent.parent.parent / "data" / "nba_training.db"
 _SCORE_CACHE_PATH = Path(__file__).parent.parent.parent / "data" / "score_cache.json"
 _GAME_MINUTES = 240.0
 _LEAGUE_AVG_DEF_RTG = 114.0  # League-average defensive rating used for opp-adjustment
+_LEAGUE_AVG_TOV = 14.0       # League-average team turnovers per game
+_LEAGUE_AVG_PACE = 98.0      # Possessions per 48 min, used to convert pts→per-100
 _BREAKOUT_THRESHOLD = 30.0   # Points threshold for "breakout" classification
 
 # Pre-game score predictions locked per game_id — persisted to disk so backend
@@ -249,6 +251,233 @@ def _fetch_team_context(team_abbreviation: str) -> dict:
     return result
 
 
+_HCA_CACHE: dict[str, dict] = {}
+
+def _fetch_team_home_away_factor(team_abbr: str) -> dict:
+    """
+    Computes team-specific home court advantage from actual DB performance.
+    Different teams benefit differently at home — MIL gets a massive lift,
+    OKC gets a moderate offensive boost but stronger crowd-driven defense,
+    some teams (MIN, CHI) actually perform worse at home.
+
+    Returns:
+        home_off  — offensive multiplier when playing at home  (e.g. 1.020)
+        away_off  — offensive multiplier when playing away     (e.g. 0.980)
+        home_def  — how much weaker opponent scores at this arena (ratio < 1 = tougher D)
+    All values are clamped to reasonable bounds to prevent outliers corrupting predictions.
+    """
+    defaults = {"home_off": 1.012, "away_off": 0.988, "home_def": 0.993}
+    ta = team_abbr.upper()
+    if ta in _HCA_CACHE:
+        return _HCA_CACHE[ta]
+    if not _DB_PATH.exists():
+        return defaults
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        conn.execute("PRAGMA query_only = ON")
+
+        # Team's own scoring: home vs away pts/game
+        off_row = conn.execute("""
+            SELECT
+                AVG(CASE WHEN home_away='H' THEN team_pts END),
+                AVG(CASE WHEN home_away='A' THEN team_pts END),
+                AVG(team_pts)
+            FROM (
+                SELECT game_id, home_away, SUM(pts) AS team_pts
+                FROM player_game_logs
+                WHERE team_abbreviation = ?
+                  AND season_type = 'Regular Season'
+                  AND season IN (SELECT DISTINCT season FROM player_game_logs
+                                 ORDER BY season DESC LIMIT 2)
+                GROUP BY game_id, home_away
+            )
+        """, (ta,)).fetchone()
+
+        # Opponent scoring at this team's home vs away — avoid slow self-join.
+        # When this team is HOME, opponents play AWAY (home_away='A' for opponent)
+        # When this team is AWAY, opponents play HOME (home_away='H' for opponent)
+        # We find opponents by querying where opponent_abbreviation = this team.
+        def_row = conn.execute("""
+            SELECT
+                AVG(CASE WHEN home_away='A' THEN game_pts END),
+                AVG(CASE WHEN home_away='H' THEN game_pts END)
+            FROM (
+                SELECT game_id, home_away, SUM(pts) AS game_pts
+                FROM player_game_logs
+                WHERE opponent_abbreviation = ?
+                  AND season_type = 'Regular Season'
+                  AND season IN (SELECT DISTINCT season FROM player_game_logs
+                                 ORDER BY season DESC LIMIT 2)
+                GROUP BY game_id, home_away
+            )
+        """, (ta,)).fetchone()
+        conn.close()
+
+        result = dict(defaults)
+
+        if off_row and off_row[2] and off_row[0] and off_row[1]:
+            home_pts, away_pts, overall = float(off_row[0]), float(off_row[1]), float(off_row[2])
+            # Clamp: max 2% boost at home, max 2% penalty away (conservative)
+            result["home_off"] = max(1.000, min(1.020, home_pts / overall))
+            result["away_off"] = max(0.980, min(1.000, away_pts / overall))
+
+        if def_row and def_row[0] and def_row[1]:
+            home_opp, away_opp = float(def_row[0]), float(def_row[1])
+            if away_opp > 0:
+                # home_def < 1 means opponents score less at this arena (tougher home D)
+                result["home_def"] = max(0.985, min(1.005, home_opp / away_opp))
+
+        _HCA_CACHE[ta] = result
+        return result
+    except Exception:
+        return defaults
+
+
+def _fetch_series_record(home_abbr: str, away_abbr: str) -> tuple[int, int]:
+    """
+    Returns (home_wins, away_wins) by comparing per-game scores in the playoff series.
+    Used to detect elimination games, closeout attempts, and high-stakes deficits.
+    """
+    if not _DB_PATH.exists():
+        return 0, 0
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        ta, oa = home_abbr.upper(), away_abbr.upper()
+        rows = conn.execute(
+            """
+            SELECT h.game_id, h.team_pts, a.team_pts
+            FROM (
+                SELECT game_id, SUM(pts) AS team_pts
+                FROM player_game_logs
+                WHERE season_type = 'Playoffs'
+                  AND team_abbreviation = ? AND opponent_abbreviation = ?
+                GROUP BY game_id
+            ) h
+            JOIN (
+                SELECT game_id, SUM(pts) AS team_pts
+                FROM player_game_logs
+                WHERE season_type = 'Playoffs'
+                  AND team_abbreviation = ? AND opponent_abbreviation = ?
+                GROUP BY game_id
+            ) a ON h.game_id = a.game_id
+            """,
+            (ta, oa, oa, ta),
+        ).fetchall()
+        conn.close()
+        home_wins = sum(1 for _, h, a in rows if h > a)
+        away_wins = sum(1 for _, h, a in rows if a > h)
+        return home_wins, away_wins
+    except Exception:
+        return 0, 0
+
+
+def _fetch_series_team_efficiency(team_abbr: str, opp_abbr: str) -> dict:
+    """
+    Returns series-specific team performance metrics aggregated from actual box scores.
+    Used to supplement/replace season-long ratings with in-series evidence.
+
+    Keys: games_played, pts_per_game, tov_per_game, reb_per_game, fg3m_per_game,
+          pts_allowed_per_game (opponent scoring against this team in the series).
+    """
+    if not _DB_PATH.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        ta = team_abbr.upper()
+        oa = opp_abbr.upper()
+
+        rows = conn.execute(
+            """
+            SELECT game_id,
+                   SUM(pts) AS team_pts,
+                   SUM(tov) AS team_tov,
+                   SUM(reb) AS team_reb,
+                   SUM(fg3m) AS team_fg3m
+            FROM player_game_logs
+            WHERE season_type = 'Playoffs'
+              AND team_abbreviation = ?
+              AND opponent_abbreviation = ?
+            GROUP BY game_id
+            ORDER BY MAX(game_date) DESC
+            """,
+            (ta, oa),
+        ).fetchall()
+
+        # Opponent's pts scored against this team (= pts this team allowed)
+        opp_rows = conn.execute(
+            """
+            SELECT game_id, SUM(pts) AS opp_pts
+            FROM player_game_logs
+            WHERE season_type = 'Playoffs'
+              AND team_abbreviation = ?
+              AND opponent_abbreviation = ?
+            GROUP BY game_id
+            """,
+            (oa, ta),
+        ).fetchall()
+        conn.close()
+
+        if not rows:
+            return {}
+
+        n = len(rows)
+        # ── Recency weighting ──────────────────────────────────────────────
+        # Rows are ordered DESC (most recent first). Recent games matter more:
+        # G_most_recent gets weight n, G_next gets weight n-1, ..., G_oldest gets 1.
+        # For 3 games: G3 weight=3, G2 weight=2, G1 weight=1 → G3 counts 3× G1.
+        # This surfaces the real trend (e.g. OKC winning by 7, 9, 15 in series)
+        # rather than averaging in a stale early-series result at equal weight.
+        weights = list(range(n, 0, -1))   # [n, n-1, ..., 1] — most recent first
+        total_w = sum(weights)
+
+        def _wavg(vals: list) -> float:
+            return sum(v * w for v, w in zip(vals, weights)) / total_w
+
+        result = {
+            "games_played":  n,
+            "pts_per_game":  round(_wavg([r[1] for r in rows]), 1),
+            "tov_per_game":  round(_wavg([r[2] for r in rows]), 1),
+            "reb_per_game":  round(_wavg([r[3] for r in rows]), 1),
+            "fg3m_per_game": round(_wavg([r[4] for r in rows]), 1),
+        }
+        if opp_rows:
+            # Match opp_rows to same game order as rows for correct recency weighting
+            opp_by_game = {r[0]: r[1] for r in opp_rows}
+            opp_pts_ordered = [opp_by_game.get(r[0], 0) for r in rows]
+            result["pts_allowed_per_game"] = round(_wavg(opp_pts_ordered), 1)
+        return result
+    except Exception:
+        return {}
+
+
+def _fetch_series_participants(home_abbr: str, away_abbr: str) -> dict[str, float]:
+    """
+    Returns {player_id: avg_series_minutes} for every player who appeared in
+    at least one game of the current playoff series between home_abbr and away_abbr.
+    Players not in this dict did not play and should have near-zero play probability.
+    """
+    if not _DB_PATH.exists():
+        return {}
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        rows = conn.execute(
+            """
+            SELECT player_id, AVG(min) AS avg_min
+            FROM player_game_logs
+            WHERE season_type = 'Playoffs'
+              AND team_abbreviation IN (?, ?)
+              AND opponent_abbreviation IN (?, ?)
+              AND min > 0
+            GROUP BY player_id
+            """,
+            (home_abbr, away_abbr, home_abbr, away_abbr),
+        ).fetchall()
+        conn.close()
+        return {str(r[0]): float(r[1]) for r in rows}
+    except Exception:
+        return {}
+
+
 def _usage_boost(projections: list, avg_min: dict, play_prob: dict) -> float:
     """
     When DNP players held a share of projected pts, boost remaining active players.
@@ -279,6 +508,178 @@ def _rescale_player_pts(proj: PlayerProjection, scale: float) -> PlayerProjectio
         high=_scale_line(proj.projected_stats.high),
     )
     return proj.model_copy(update={"projected_stats": new_band})
+
+
+def _compute_blowout_bonus(
+    series_eff: dict | None,
+    opp_is_b2b: bool,
+    game_pace: float,
+    opp_def_rating: float,
+) -> float:
+    """
+    Extra scoring bonus/penalty when multiple blowout signals corroborate.
+
+    Signals:
+      1. Extreme series dominance (margin ≥ 10 pts over 2+ games)
+      2. Opponent on a back-to-back (tired legs → give up more pts)
+      3. Fast pace + weak opponent defense (scoring explosion conditions)
+
+    Single signals are halved to avoid false positives.
+    Two or more signals get full weight.
+    Total capped at ±9 pts to prevent overcorrection.
+    """
+    signals: list[float] = []
+
+    # Signal 1: Extreme series dominance
+    if series_eff and series_eff.get("games_played", 0) >= 2:
+        pts     = series_eff.get("pts_per_game", 0.0)
+        allowed = series_eff.get("pts_allowed_per_game", 0.0)
+        if pts > 0 and allowed > 0:
+            margin = pts - allowed
+            if abs(margin) >= 10:
+                # Linear below 10, steeper above 10 to capture compounding blowouts
+                raw = (abs(margin) - 8) * 0.6
+                signals.append(min(5.0, raw) if margin > 0 else -min(5.0, raw))
+
+    # Signal 2: Opponent on B2B — we score more when they are tired
+    # (our own B2B fatigue is already applied via the 3% penalty above)
+    if opp_is_b2b:
+        signals.append(3.0)
+
+    # Signal 3: Fast game vs weak defense → scoring above the pace model ceiling
+    if game_pace > 100 and opp_def_rating > 117:
+        extra = (game_pace - 100) * 0.20 + (opp_def_rating - 117) * 0.15
+        signals.append(min(3.0, extra))
+
+    if not signals:
+        return 0.0
+
+    total = sum(signals)
+    if len(signals) == 1:
+        # Single signal: apply at half-strength (not enough corroboration)
+        total *= 0.5
+
+    return round(max(-9.0, min(9.0, total)), 1)
+
+
+def _compute_blowout_info(
+    home_total: int,
+    away_total: int,
+    home_series_eff: dict,
+    away_series_eff: dict,
+    home_is_b2b: bool,
+    away_is_b2b: bool,
+    home_off_rtg: float,
+    away_off_rtg: float,
+    home_def_rtg: float,
+    away_def_rtg: float,
+    home_pace: float,
+    away_pace: float,
+    is_playoffs: bool,
+    home_abbr: str,
+    away_abbr: str,
+) -> dict:
+    """
+    Runs INDEPENDENTLY of the base prediction — never changes home_total / away_total.
+
+    Checks four blowout signals:
+      1. Series dominance  — one team winning by 10+ pts/game over 2+ playoff games
+      2. Rest mismatch     — one team on B2B while the opponent is fully rested
+      3. Rating mismatch   — off_rating vs opp_def_rating gap exceeds 10 pts
+      4. Pace explosion    — fast combined pace (>100) vs weak opponent defense (>116)
+
+    Returns a dict:
+      is_blowout  — True when 2+ signals fire AND extra_margin >= 8 pts
+      home        — amplified home score (if blowout)
+      away        — amplified away score (if blowout)
+      signals     — list of human-readable signal strings
+    """
+    signals: list[str] = []
+    home_bonus = 0.0  # positive = home blowout candidate, negative = away
+    away_bonus = 0.0
+
+    game_pace = (home_pace + away_pace) / 2.0
+
+    # ── Signal 1: Series dominance (playoffs, 2+ games) ─────────────────
+    if is_playoffs:
+        for eff, label, is_home_team in [
+            (home_series_eff, home_abbr, True),
+            (away_series_eff, away_abbr, False),
+        ]:
+            if eff and eff.get("games_played", 0) >= 2:
+                pts     = eff.get("pts_per_game", 0.0)
+                allowed = eff.get("pts_allowed_per_game", 0.0)
+                if pts > 0 and allowed > 0:
+                    margin = pts - allowed
+                    if margin >= 10:
+                        bonus = min(7.0, (margin - 8) * 0.55)
+                        signals.append(
+                            f"{label.upper()} series dominance: +{margin:.0f} pts/game avg"
+                        )
+                        if is_home_team:
+                            home_bonus += bonus
+                        else:
+                            away_bonus += bonus
+
+    # ── Signal 2: Rest mismatch ─────────────────────────────────────────
+    if home_is_b2b and not away_is_b2b:
+        signals.append(f"{home_abbr.upper()} on back-to-back — {away_abbr.upper()} fully rested")
+        away_bonus += 4.5  # away benefits
+    elif away_is_b2b and not home_is_b2b:
+        signals.append(f"{away_abbr.upper()} on back-to-back — {home_abbr.upper()} fully rested")
+        home_bonus += 4.5  # home benefits
+
+    # ── Signal 3: Offensive vs defensive rating gap ──────────────────────
+    home_rtg_gap = home_off_rtg - away_def_rtg   # positive = home offence >> away D
+    away_rtg_gap = away_off_rtg - home_def_rtg   # positive = away offence >> home D
+    if home_rtg_gap > 10:
+        bonus = min(4.0, (home_rtg_gap - 10) * 0.40)
+        signals.append(
+            f"{home_abbr.upper()} elite offense ({home_off_rtg:.0f}) vs weak {away_abbr.upper()} defense ({away_def_rtg:.0f})"
+        )
+        home_bonus += bonus
+    if away_rtg_gap > 10:
+        bonus = min(4.0, (away_rtg_gap - 10) * 0.40)
+        signals.append(
+            f"{away_abbr.upper()} elite offense ({away_off_rtg:.0f}) vs weak {home_abbr.upper()} defense ({home_def_rtg:.0f})"
+        )
+        away_bonus += bonus
+
+    # ── Signal 4: Pace explosion ─────────────────────────────────────────
+    if game_pace > 100:
+        if away_def_rtg > 116:
+            bonus = min(3.0, (game_pace - 100) * 0.20 + (away_def_rtg - 116) * 0.15)
+            signals.append(f"Fast pace ({game_pace:.0f} poss) + weak {away_abbr.upper()} defense ({away_def_rtg:.0f} Drtg)")
+            home_bonus += bonus
+        if home_def_rtg > 116:
+            bonus = min(3.0, (game_pace - 100) * 0.20 + (home_def_rtg - 116) * 0.15)
+            signals.append(f"Fast pace ({game_pace:.0f} poss) + weak {home_abbr.upper()} defense ({home_def_rtg:.0f} Drtg)")
+            away_bonus += bonus
+
+    # ── Determine blowout direction ──────────────────────────────────────
+    # Only fire when 2+ distinct signals are present
+    net = home_bonus - away_bonus
+    extra_margin = abs(net)
+
+    if len(signals) < 2 or extra_margin < 8:
+        return {"is_blowout": False, "home": home_total, "away": away_total, "signals": signals}
+
+    # Amplify the existing prediction — winner gets 60% of extra margin, loser loses 40%
+    if net > 0:
+        # Home blowout
+        blowout_home = home_total + round(extra_margin * 0.60)
+        blowout_away = away_total - round(extra_margin * 0.40)
+    else:
+        # Away blowout
+        blowout_home = home_total - round(extra_margin * 0.40)
+        blowout_away = away_total + round(extra_margin * 0.60)
+
+    return {
+        "is_blowout": True,
+        "home": blowout_home,
+        "away": blowout_away,
+        "signals": signals,
+    }
 
 
 class ProjectionService:
@@ -323,6 +724,66 @@ class ProjectionService:
         home_ctx = _fetch_team_context(home_tc)
         away_ctx = _fetch_team_context(away_tc)
 
+        # For playoff series: use actual series minutes to determine who plays
+        # and how much. Players not in the series get excluded entirely.
+        # Players in the series get avg_min updated from real series data so the
+        # 240-minute normalization reflects actual playoff rotations.
+        is_playoffs = context.playoff_intensity >= 0.55
+        home_series_eff: dict = {}
+        away_series_eff: dict = {}
+        if is_playoffs:
+            series_participants = _fetch_series_participants(home_tc, away_tc)
+            if series_participants:
+                all_pids = [p.player_id for p in context.home_team.players + context.away_team.players]
+                for pid in all_pids:
+                    if pid in series_participants:
+                        # Override avg_min with actual series playing time
+                        avg_min[pid] = series_participants[pid]
+                    else:
+                        # Not in series rotation — exclude completely
+                        avg_min[pid] = 0.0
+                        play_prob[pid] = 0.0
+            # Fetch series-level team efficiency (pts, tov, reb, def) for both sides
+            home_series_eff = _fetch_series_team_efficiency(home_tc, away_tc)
+            away_series_eff = _fetch_series_team_efficiency(away_tc, home_tc)
+
+        # ── Series record & elimination/stakes context ──────────────────
+        # Used to apply intensity boosts for must-win situations.
+        # home_series_deficit > 0  → home team is trailing in the series
+        # is_elimination           → team is one loss from going home
+        # is_closeout              → team can eliminate opponent with a win
+        home_series_wins, away_series_wins = 0, 0
+        home_series_deficit = 0
+        away_series_deficit = 0
+        home_is_elimination = False
+        away_is_elimination = False
+        home_is_closeout = False
+        away_is_closeout = False
+
+        if is_playoffs:
+            home_series_wins, away_series_wins = _fetch_series_record(home_tc, away_tc)
+            home_series_deficit = away_series_wins - home_series_wins
+            away_series_deficit = home_series_wins - away_series_wins
+            # Elimination: opponent is at 3 wins (next loss = out)
+            home_is_elimination = away_series_wins == 3
+            away_is_elimination = home_series_wins == 3
+            # Closeout: this team can win the series with a win today
+            home_is_closeout = home_series_wins == 3
+            away_is_closeout = away_series_wins == 3
+            logger.debug(
+                "Series record [%s vs %s]: home %d–%d away | "
+                "home_elim=%s away_elim=%s home_close=%s away_close=%s",
+                home_tc, away_tc, home_series_wins, away_series_wins,
+                home_is_elimination, away_is_elimination,
+                home_is_closeout, away_is_closeout,
+            )
+
+        # Team-specific home court factors — computed from actual home/away
+        # performance history so OKC, MIL, NYK etc. each get their real boost.
+        # Fetched unconditionally (regular season games use them too).
+        home_hca = _fetch_team_home_away_factor(home_tc)
+        away_hca = _fetch_team_home_away_factor(away_tc)
+
         home_advantage = context.home_advantage  # typically 2.4–2.5 pts
 
         def _blended_team_total(
@@ -335,6 +796,13 @@ class ProjectionService:
             form_factor: float,
             is_b2b: bool,
             vegas_implied: float | None = None,
+            series_eff: dict | None = None,
+            opp_series_eff: dict | None = None,
+            team_hca: dict | None = None,
+            opp_hca: dict | None = None,
+            series_deficit: int = 0,
+            is_elimination: bool = False,
+            is_closeout: bool = False,
         ) -> int:
             active = [p for p in projections if p.availability_status != "dnp"]
 
@@ -361,29 +829,182 @@ class ProjectionService:
             if is_b2b:
                 player_estimate *= 0.97
 
-            # ── Pace anchor (opponent-adjusted) ────────────────────────────
-            # Standard formula: adjust OffRtg by how much better/worse than
-            # league average the opponent defends, then use avg game pace.
-            # opp_def_rating < 114 = elite defense (suppresses scoring)
-            # opp_def_rating > 114 = weak defense (gives up more)
-            game_pace = (pace + opp_pace) / 2
-            adjusted_off_rtg = off_rating * (_LEAGUE_AVG_DEF_RTG / max(opp_def_rating, 90.0))
-            pace_estimate = (adjusted_off_rtg * game_pace) / 100.0
+            # ── Playoff intensity boost (applied post-blend so Vegas can't dilute) ─
+            # Elimination: season on the line → +3 pts (must-win effort)
+            # Down 2 games (very high stakes): +2 pts
+            # Down 1 game (must-win mentality): +1.5 pts
+            # Closeout attempt: +1 pt (focus / professionalism from the leading team)
+            intensity_boost = 0.0
+            if is_playoffs:
+                if is_elimination:
+                    intensity_boost = 3.0
+                elif series_deficit >= 2:
+                    intensity_boost = 2.0
+                elif series_deficit == 1:
+                    intensity_boost = 1.5
+                if is_closeout:
+                    intensity_boost += 1.0
 
-            # ── Blend ──────────────────────────────────────────────────────
-            # Player model is the primary driver — it uses real roster quality,
-            # matchup vulnerability, and individual form. Pace and Vegas are
-            # anchors that prevent the sum from going out of range.
+            # ── Regular season: simple model, no series complexity ──────────
+            # For non-playoff games there is no series data and the extra
+            # calibration layers add noise rather than signal. Use a clean
+            # player + Vegas + pace blend identical to the original model.
+            if not is_playoffs:
+                _team_hca = team_hca or {"home_off": 1.012, "away_off": 0.988, "home_def": 0.993}
+                _opp_hca  = opp_hca  or {"home_off": 1.012, "away_off": 0.988, "home_def": 0.993}
+                if is_home:
+                    player_estimate *= _team_hca["home_off"]
+                    eff_opp_def = opp_def_rating / max(_opp_hca["home_def"], 0.85)
+                else:
+                    player_estimate *= _team_hca["away_off"]
+                    eff_opp_def = opp_def_rating * _opp_hca["home_def"]
+                flat = 1.0 if is_home else -1.0
+                gp = (pace + opp_pace) / 2.0
+                pa = 1.0 + max(0.0, (gp - _LEAGUE_AVG_PACE) / _LEAGUE_AVG_PACE) * 0.6
+                adj = off_rating * (max(eff_opp_def, 90.0) / _LEAGUE_AVG_DEF_RTG)
+                pace_est = (adj * gp) / 100.0 * pa
+                if vegas_implied is not None:
+                    blended = player_estimate * 0.50 + pace_est * 0.05 + vegas_implied * 0.45
+                else:
+                    blended = player_estimate * 0.65 + pace_est * 0.35
+                return round(blended + flat)  # no intensity_boost for regular season
+
+            # ── Series team-level adjustments ──────────────────────────────
+            # These capture team dynamics that individual player projections miss:
+            # (a) Turnover rate: extra turnovers = fewer scoring possessions.
+            # (b) Series calibration: blend player estimate toward actual series pace.
+            # (c) Opponent series defense: replace season def_rtg with series evidence.
+            if series_eff and series_eff.get("games_played", 0) >= 1:
+                sg = series_eff["games_played"]
+
+                # (a) TOV penalty — every extra turnover above league avg costs ~1.2 pts
+                tov_delta = series_eff.get("tov_per_game", _LEAGUE_AVG_TOV) - _LEAGUE_AVG_TOV
+                player_estimate -= tov_delta * 1.2
+
+                # (b) Blend player model with actual series scoring.
+                # Each game adds 30% trust in series reality — by game 2 we trust
+                # series data at 60%, fully overriding inflated season ratings.
+                series_scoring_weight = min(0.65, 0.30 * sg)
+                series_pts = series_eff["pts_per_game"]
+                player_estimate = (
+                    player_estimate * (1 - series_scoring_weight)
+                    + series_pts * series_scoring_weight
+                )
+
+                # (c) Series dominance adjustment — if this team is outscoring/being
+                # outscored vs the opponent in the series, amplify that gap.
+                # e.g. OKC scoring 120/game and allowing 105 → OKC gets a +3 bonus.
+                # This is how blowouts build: dominant teams score more AND suppress more.
+                pts_allowed = series_eff.get("pts_allowed_per_game")
+                if pts_allowed and pts_allowed > 0 and series_pts > 0:
+                    series_margin = series_pts - pts_allowed
+                    # Scale: every 10pts of series margin → ~2pts boost/penalty
+                    dominance_bonus = series_margin * 0.20
+                    # Cap to avoid overcorrecting from small sample
+                    dominance_bonus = max(-6.0, min(6.0, dominance_bonus))
+                    player_estimate += dominance_bonus
+
+            # ── Pace anchor (opponent-adjusted) ────────────────────────────
+            # Lower opp_def_rating = elite defense = should suppress scoring.
+            # Correct formula: off_rating * (opp_def / league_avg).
+            # When series data exists, supplement season def_rating with
+            # the opponent's actual pts-allowed in this series (more current).
+            effective_opp_def = opp_def_rating
+            if opp_series_eff and opp_series_eff.get("games_played", 0) >= 1:
+                og = opp_series_eff["games_played"]
+                if "pts_allowed_per_game" in opp_series_eff:
+                    # Convert series pts-allowed/game to approximate per-100 rating
+                    series_implied_def = opp_series_eff["pts_allowed_per_game"] * (100 / _LEAGUE_AVG_PACE)
+                    series_def_weight = min(0.50, 0.25 * og)
+                    effective_opp_def = (
+                        opp_def_rating * (1 - series_def_weight)
+                        + series_implied_def * series_def_weight
+                    )
+
+            # ── Team-specific home court advantage ─────────────────────────
+            # Every team benefits differently at home. MIL gets a +6.7 pt
+            # offensive boost, OKC gets +2.7, MIN actually plays worse at home.
+            # Use each team's real home/away differential from historical data
+            # instead of a one-size-fits-all multiplier.
+            #
+            # off_mult  — this team's actual home (or away) offensive factor
+            # opp_def_mult — how much the opponent's defense weakens/strengthens
+            #                based on their location (road teams defend slightly worse)
+            # Playoff amplifier: crowd/stakes matter more → scale effect up 15%.
+            is_pl = context.playoff_intensity >= 0.55
+
+            _team_hca = team_hca or {"home_off": 1.012, "away_off": 0.988, "home_def": 0.993}
+            _opp_hca  = opp_hca  or {"home_off": 1.012, "away_off": 0.988, "home_def": 0.993}
+
+            if is_home:
+                raw_off_mult = _team_hca["home_off"]
+                raw_def_mult = 1.0 / _opp_hca["home_def"]
+            else:
+                raw_off_mult = _team_hca["away_off"]
+                raw_def_mult = _opp_hca["home_def"]
+
+            # No playoff amplifier — OKC won on the road by 7 in Game 3, proving
+            # playoffs don't reliably magnify home court. Keep the base DB-derived
+            # multipliers (already conservative: ±1-4%) with no extra scaling.
+            player_estimate *= raw_off_mult
+            effective_opp_def *= raw_def_mult
+
+            # Flat intangibles: home gets +1 pt (refs, crowd noise)
+            flat_bonus = 1.0 if is_home else -1.0
+
+            # Pace model — amplify when both teams play fast (more possessions = more pts)
+            game_pace = (pace + opp_pace) / 2
+            pace_amp = 1.0 + max(0.0, (game_pace - _LEAGUE_AVG_PACE) / _LEAGUE_AVG_PACE) * 0.6
+            adjusted_off_rtg = off_rating * (max(effective_opp_def, 90.0) / _LEAGUE_AVG_DEF_RTG)
+            formula_pace_estimate = (adjusted_off_rtg * game_pace) / 100.0 * pace_amp
+
+            series_games = (series_eff or {}).get("games_played", 0)
+
+            # When series data exists, use actual series scoring as the pace anchor.
+            # Season ratings (118 for both CLE and NYK) mask that CLE is only
+            # scoring 98.5/game in this specific series. Series reality > pre-series model.
+            if series_games >= 2 and series_eff:
+                pace_estimate = series_eff["pts_per_game"]
+            elif series_games == 1 and series_eff:
+                # Blend formula and series equally for small sample
+                pace_estimate = (formula_pace_estimate + series_eff["pts_per_game"]) / 2
+            else:
+                pace_estimate = formula_pace_estimate
+
             if vegas_implied is not None:
-                # Vegas is very accurate — give it meaningful weight,
-                # but keep player model as the majority driver.
-                # Home court is already priced into Vegas odds.
-                return round(player_estimate * 0.55 + pace_estimate * 0.15 + vegas_implied * 0.30)
-            # No Vegas: apply home advantage directly to the final total so it
-            # actually differentiates the teams (±1.5 on pace_estimate only gives
-            # ~0.5 pt effective difference after weighting — far too small).
-            home_bonus = home_advantage if is_home else -home_advantage
-            return round(player_estimate * 0.65 + pace_estimate * 0.35 + home_bonus)
+                # Vegas is accurate pre-series (Game 1) but increasingly stale
+                # as series evidence accumulates. By Game 4, 3 real box scores
+                # tell us far more than the opening line — reduce Vegas aggressively.
+                # Vegas also has a known home-team bias in playoffs (crowds, narratives)
+                # that causes it to underestimate road dominance like OKC's 2025 run.
+                if series_games >= 3:
+                    # 3+ games: series reality drives 75%, Vegas kept at 20%
+                    # to retain real-time injury/sharp-money signal
+                    player_w, vegas_w, pace_w = 0.75, 0.20, 0.05
+                elif series_games == 2:
+                    player_w, vegas_w, pace_w = 0.70, 0.25, 0.05
+                elif series_games == 1:
+                    player_w, vegas_w, pace_w = 0.55, 0.40, 0.05
+                else:
+                    # No series data → trust Vegas heavily (Game 1)
+                    player_w, vegas_w, pace_w = 0.50, 0.45, 0.05
+                blended = player_estimate * player_w + pace_estimate * pace_w + vegas_implied * vegas_w
+                blended += flat_bonus + intensity_boost
+                return round(blended)
+
+            # No Vegas:
+            # 2+ series games → player_estimate already has series calib + dominance
+            # baked in at 60%+ weight. Adding pace on top dilutes that signal.
+            # Trust the series-adjusted player estimate directly.
+            if series_games >= 2:
+                return round(player_estimate + flat_bonus + intensity_boost)
+            elif series_games == 1:
+                blended = player_estimate * 0.75 + pace_estimate * 0.25
+            else:
+                blended = player_estimate * 0.65 + pace_estimate * 0.35
+
+            blended += flat_bonus + intensity_boost
+            return round(blended)
 
         logger.debug(
             "Score blend [%s]: home_vegas=%s away_vegas=%s",
@@ -402,6 +1023,13 @@ class ProjectionService:
             form_factor=home_ctx["form_factor"],
             is_b2b=home_ctx["is_b2b"],
             vegas_implied=context.home_vegas_total,
+            series_eff=home_series_eff,
+            opp_series_eff=away_series_eff,
+            team_hca=home_hca,
+            opp_hca=away_hca,
+            series_deficit=home_series_deficit,
+            is_elimination=home_is_elimination,
+            is_closeout=home_is_closeout,
         )
         away_total = _blended_team_total(
             away_player_projections,
@@ -413,6 +1041,13 @@ class ProjectionService:
             form_factor=away_ctx["form_factor"],
             is_b2b=away_ctx["is_b2b"],
             vegas_implied=context.away_vegas_total,
+            series_eff=away_series_eff,
+            opp_series_eff=home_series_eff,
+            team_hca=away_hca,
+            opp_hca=home_hca,
+            series_deficit=away_series_deficit,
+            is_elimination=away_is_elimination,
+            is_closeout=away_is_closeout,
         )
 
         # Rescale individual players so their scores sum to the team total.
@@ -447,6 +1082,35 @@ class ProjectionService:
         is_playoffs = context.playoff_intensity >= 0.65
         playoff_mult = 1.15 if is_playoffs else 1.0
 
+        # Elimination breakout boost: top-2 usage players on a must-win team
+        # elevate in do-or-die situations — stars step up when the season is on the line.
+        # Identify the two highest-usage active players per team facing elimination.
+        _elim_boost_pids: set[str] = set()
+        if is_playoffs:
+            for team_projs, is_elim in [
+                (home_player_projections, home_is_elimination),
+                (away_player_projections, away_is_elimination),
+            ]:
+                if is_elim:
+                    top2 = sorted(
+                        [p for p in team_projs if p.availability_status != "dnp"],
+                        key=lambda p: p.projected_stats.mean.points,
+                        reverse=True,
+                    )[:2]
+                    _elim_boost_pids.update(p.player_id for p in top2)
+            # Also give a smaller boost to the top scorer on a team down 1 game
+            for team_projs, deficit in [
+                (home_player_projections, home_series_deficit),
+                (away_player_projections, away_series_deficit),
+            ]:
+                if deficit == 1:
+                    top1 = sorted(
+                        [p for p in team_projs if p.availability_status != "dnp"],
+                        key=lambda p: p.projected_stats.mean.points,
+                        reverse=True,
+                    )[:1]
+                    _elim_boost_pids.update(p.player_id for p in top1)
+
         def _apply_volatility(
             proj: PlayerProjection,
             opp_def_rtg: float,
@@ -460,6 +1124,11 @@ class ProjectionService:
             # opp_factor > 1 when opp is worse than league avg, < 1 when elite.
             opp_factor = min(1.4, max(0.6, opp_def_rtg / _LEAGUE_AVG_DEF_RTG))
             adj_breakout_pct = min(1.0, raw_breakout_pct * opp_factor)
+
+            # Elimination / high-stakes star boost: top players on must-win teams
+            # get an extra 20% boost to their breakout probability.
+            if proj.player_id in _elim_boost_pids:
+                adj_breakout_pct = min(1.0, adj_breakout_pct * 1.20)
 
             m = proj.projected_stats.mean
 
@@ -525,6 +1194,25 @@ class ProjectionService:
         home_total += _breakout_boost(home_player_projections, context.home_vegas_total)
         away_total += _breakout_boost(away_player_projections, context.away_vegas_total)
 
+        # ── Blowout detection (separate from base prediction) ────────────
+        blowout_info = _compute_blowout_info(
+            home_total=home_total,
+            away_total=away_total,
+            home_series_eff=home_series_eff,
+            away_series_eff=away_series_eff,
+            home_is_b2b=home_ctx["is_b2b"],
+            away_is_b2b=away_ctx["is_b2b"],
+            home_off_rtg=context.home_team.offensive_rating,
+            away_off_rtg=context.away_team.offensive_rating,
+            home_def_rtg=context.home_team.defensive_rating,
+            away_def_rtg=context.away_team.defensive_rating,
+            home_pace=context.home_team.pace,
+            away_pace=context.away_team.pace,
+            is_playoffs=is_playoffs,
+            home_abbr=home_tc,
+            away_abbr=away_tc,
+        )
+
         game_id = context.game_id
 
         if status in ("live", "final"):
@@ -545,10 +1233,12 @@ class ProjectionService:
             home_total += 1
 
         home_projection = prediction_engine.project_team(
-            context, context.home_team, context.away_team, True, player_score_sum=home_total
+            context, context.home_team, context.away_team, True,
+            player_score_sum=home_total, opponent_score_sum=away_total,
         )
         away_projection = prediction_engine.project_team(
-            context, context.away_team, context.home_team, False, player_score_sum=away_total
+            context, context.away_team, context.home_team, False,
+            player_score_sum=away_total, opponent_score_sum=home_total,
         )
 
         player_projections = home_player_projections + away_player_projections
@@ -577,6 +1267,14 @@ class ProjectionService:
         ]
 
         margin = abs(home_total - away_total)
+
+        # Build blowout schema objects from detection result
+        from app.schemas.game import BlowoutScore as _BlowoutScore
+        blowout_score_obj = (
+            _BlowoutScore(home=blowout_info["home"], away=blowout_info["away"])
+            if blowout_info["is_blowout"] else None
+        )
+
         return GameSnapshot(
             game_id=context.game_id,
             status=status,
@@ -591,6 +1289,9 @@ class ProjectionService:
             win_probability_series=win_series,
             is_close_game=margin <= 5,
             predicted_margin=home_total - away_total,
+            blowout_alert=blowout_info["is_blowout"],
+            blowout_score=blowout_score_obj,
+            blowout_signals=blowout_info["signals"],
         )
 
 

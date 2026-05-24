@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from datetime import datetime
+from functools import partial
 from typing import Any
 
 import httpx
@@ -92,7 +94,7 @@ class LiveGameService:
                 for game in scoreboard.get("scoreboard", {}).get("games", [])
                 if int(game.get("gameStatus", 0)) >= 2
             ]
-        except (httpx.HTTPError, KeyError, ValueError):
+        except Exception:
             return [
                 {
                     "game_id": game_id,
@@ -110,7 +112,7 @@ class LiveGameService:
             scoreboard = await nba_live_client.fetch_scoreboard()
             games = scoreboard.get("scoreboard", {}).get("games", [])
             return [self._build_live_slate_row(game) for game in games]
-        except (httpx.HTTPError, KeyError, ValueError):
+        except Exception:
             games = []
             for game_id, slate_row in self._slate.items():
                 context = self._contexts.get(game_id)
@@ -132,13 +134,19 @@ class LiveGameService:
     async def get_game_snapshot(self, game_id: str) -> GameSnapshot:
         context, scoreboard_game = await self._resolve_context(game_id)
         status = self._status_label(scoreboard_game.get("gameStatus")) if scoreboard_game else "scheduled"
-        snapshot = projection_service.build_snapshot(context, status=status, possession_feed=[])
+        loop = asyncio.get_event_loop()
+        snapshot = await loop.run_in_executor(
+            None, partial(projection_service.build_snapshot, context, status=status, possession_feed=[])
+        )
         return snapshot
 
     async def get_player_detail(self, game_id: str, player_id: str) -> PlayerDetailResponse:
         context, scoreboard_game = await self._resolve_context(game_id)
         status = self._status_label(scoreboard_game.get("gameStatus")) if scoreboard_game else "scheduled"
-        snapshot = projection_service.build_snapshot(context, status=status, possession_feed=[])
+        loop = asyncio.get_event_loop()
+        snapshot = await loop.run_in_executor(
+            None, partial(projection_service.build_snapshot, context, status=status, possession_feed=[])
+        )
         return self._build_player_detail_payload(game_id, player_id, context, snapshot)
 
     async def _resolve_context(self, game_id: str) -> tuple[GameContext, dict | None]:
@@ -237,7 +245,7 @@ class LiveGameService:
             momentum=self._estimate_momentum(home_team.score, away_team.score),
             fatigue_pressure=min(0.75, self._average_fatigue(home_team.players + away_team.players) + quarter * 0.05),
             whistle_tightness=0.48,
-            playoff_intensity=0.68 if "Conf." in (scoreboard_game.get("gameLabel") or "") else 0.54,
+            playoff_intensity=0.68 if "Conf." in (scoreboard_game.get("gameLabel") or "") else 0.60,
             live_pace_multiplier=pace_multiplier,
             injury_risk_flags=[],
             back_to_back=False,

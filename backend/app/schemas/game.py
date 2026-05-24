@@ -93,6 +93,11 @@ class InsightCard(BaseModel):
     severity: Literal["info", "warning", "advantage"]
 
 
+class BlowoutScore(BaseModel):
+    home: int
+    away: int
+
+
 class GameSnapshot(BaseModel):
     game_id: str
     status: str
@@ -107,6 +112,12 @@ class GameSnapshot(BaseModel):
     win_probability_series: list[dict[str, float]]
     is_close_game: bool = False
     predicted_margin: int = 0
+    # Blowout detection — computed independently from the base prediction.
+    # When 2+ signals align (series dominance, rest mismatch, pace/defense gap),
+    # we surface a blowout badge with an amplified score estimate.
+    blowout_alert: bool = False
+    blowout_score: BlowoutScore | None = None   # amplified score if blowout likely
+    blowout_signals: list[str] = []             # human-readable signal descriptions
 
 
 class SimulationRequest(BaseModel):

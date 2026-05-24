@@ -170,31 +170,55 @@ def _hot_factor(player_id: str) -> float:
     return round(min(1.45, max(0.70, ratio)), 3)
 
 
-def _player_history(player_id: str) -> dict:
+def _player_history(player_id: str, is_playoffs: bool = False, opp_team_id: str | None = None) -> dict:
     if not _DB_PATH.exists():
         return {}
+    cols = ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov", "min", "fg_pct", "fg3_pct", "usg_pct"]
+    sel = "SELECT pts, ast, reb, stl, blk, fg3m, tov, min, fg_pct, fg3_pct, usg_pct FROM player_game_logs"
     try:
         conn = sqlite3.connect(_DB_PATH)
-        # Only include games the player actually played (min > 0).
-        # DNP/missed games have 0 stats and would pull every rolling average down
-        # artificially — skip them and use the real played games immediately before.
-        rows = conn.execute(
-            """
-            SELECT pts, ast, reb, stl, blk, fg3m, tov, min, fg_pct, fg3_pct, usg_pct
-            FROM player_game_logs
-            WHERE player_id = ? AND min > 0
-            ORDER BY game_date DESC
-            LIMIT 10
-            """,
-            (player_id,),
-        ).fetchall()
+        if is_playoffs and opp_team_id:
+            opp = opp_team_id.upper()
+            # Current series games only — the only data that matters for Game 3+
+            series_rows = conn.execute(
+                f"{sel} WHERE player_id=? AND min>0 AND season_type='Playoffs'"
+                " AND opponent_abbreviation=? ORDER BY game_date DESC LIMIT 7",
+                (player_id, opp),
+            ).fetchall()
+            series_count = len(series_rows)
+            if series_rows:
+                # Series has started: use ONLY these games. Playoff basketball is
+                # a different game — regular season data from other contexts pollutes.
+                rows = list(series_rows)
+            else:
+                # Game 1 (no series data yet): fall back to H2H regular season
+                # matchups between these two teams as the best available signal.
+                rows = conn.execute(
+                    f"{sel} WHERE player_id=? AND min>0 AND opponent_abbreviation=?"
+                    " ORDER BY game_date DESC LIMIT 10",
+                    (player_id, opp),
+                ).fetchall()
+                if not rows:
+                    rows = conn.execute(
+                        f"{sel} WHERE player_id=? AND min>0 ORDER BY game_date DESC LIMIT 10",
+                        (player_id,),
+                    ).fetchall()
+        else:
+            rows = conn.execute(
+                f"{sel} WHERE player_id=? AND min>0 ORDER BY game_date DESC LIMIT 10",
+                (player_id,),
+            ).fetchall()
+            series_count = 0
         conn.close()
     except Exception:
         return {}
     if not rows:
         return {}
-    cols = ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov", "min", "fg_pct", "fg3_pct", "usg_pct"]
-    return {c: [r[i] for r in rows] for i, c in enumerate(cols)}
+    history = {c: [r[i] for r in rows] for i, c in enumerate(cols)}
+    # _series_count: how many leading entries are from the current playoff series.
+    # last3 is capped to this so it never crosses into other opponents.
+    history["_series_count"] = series_count
+    return history
 
 
 def _player_position(player_id: str) -> str:
@@ -367,7 +391,7 @@ def _series_context(team_id: str, opp_id: str, is_playoffs: bool) -> dict:
     Returns series_game_num, team_series_wins, opp_series_wins, series_advantage.
     Result is cached per matchup so DB is hit once per game, not once per player.
     """
-    defaults = {"series_game_num": 1, "team_series_wins": 0, "opp_series_wins": 0, "series_advantage": 0}
+    defaults = {"series_game_num": 1, "team_series_wins": 0, "opp_series_wins": 0, "series_advantage": 0, "team_series_tov": 0.0}
     if not is_playoffs or not _DB_PATH.exists():
         return defaults
 
@@ -402,11 +426,33 @@ def _series_context(team_id: str, opp_id: str, is_playoffs: bool) -> dict:
         team_wins = sum(1 for r in rows if r[1] > r[2])
         opp_wins  = sum(1 for r in rows if r[2] > r[1])
         adv = 1 if team_wins > opp_wins else (-1 if team_wins < opp_wins else 0)
+
+        # Fetch team's avg TOV per game in this series (used as a model feature)
+        team_series_tov = 0.0
+        if games_played > 0:
+            try:
+                conn2 = sqlite3.connect(_DB_PATH)
+                tov_rows = conn2.execute("""
+                    SELECT AVG(game_tov) FROM (
+                        SELECT game_id, SUM(tov) AS game_tov
+                        FROM player_game_logs
+                        WHERE team_abbreviation = ? AND opponent_abbreviation = ?
+                          AND season_type = 'Playoffs' AND season = ?
+                        GROUP BY game_id
+                    )
+                """, (t, o, season)).fetchone()
+                conn2.close()
+                if tov_rows and tov_rows[0] is not None:
+                    team_series_tov = float(tov_rows[0])
+            except Exception:
+                pass
+
         result = {
             "series_game_num":  games_played + 1,
             "team_series_wins": team_wins,
             "opp_series_wins":  opp_wins,
             "series_advantage": adv,
+            "team_series_tov":  team_series_tov,
         }
         _SERIES_CACHE[cache_key] = result
         return result
@@ -450,15 +496,21 @@ def _build_features(
 ) -> dict:
     row: dict[str, float] = {}
 
+    # _series_count > 0 means we're in playoffs and the first N entries are
+    # from the current series only. last3 must not cross into other opponents.
+    series_count = int(history.get("_series_count", 0))
+
     for stat in ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov", "min", "fg_pct", "fg3_pct", "usg_pct"]:
         vals = history.get(stat, [])
         row[f"{stat}_last5"]      = _rolling(vals, 5)
         row[f"{stat}_last10"]     = _rolling(vals, 10)
         row[f"{stat}_season_avg"] = float(np.mean(vals)) if vals else 0.0
 
-    # Last-3 recent form for key scoring stats
+    # last3: strictly limited to current-series games during playoffs
     for stat in ["pts", "ast", "reb", "fg3m"]:
-        row[f"{stat}_last3"] = _rolling(history.get(stat, []), 3)
+        vals = history.get(stat, [])
+        series_vals = vals[:series_count] if series_count > 0 else vals
+        row[f"{stat}_last3"] = _rolling(series_vals, 3)
 
     # Minutes consistency — high std = unpredictable role (foul trouble, coach decisions)
     min_vals = history.get("min", [])
@@ -508,6 +560,17 @@ def _build_features(
     row["opp_series_wins"]  = float(s.get("opp_series_wins",  0))
     row["series_advantage"] = float(s.get("series_advantage", 0))
 
+    # Player-level series performance — how this player has actually done in this series.
+    # series_count > 0 means we have series-specific history; use it directly.
+    # Values are 0 for non-playoff games or Game 1 (the model treats 0 as "no series data").
+    row["series_games"] = float(series_count)
+    for stat in ["pts", "ast", "reb", "fg3m"]:
+        vals = history.get(stat, [])
+        series_vals = vals[:series_count] if series_count > 0 else []
+        row[f"series_{stat}_avg"] = float(np.mean(series_vals)) if series_vals else 0.0
+    # Team-level series TOV — passed in via series dict (populated by projection_service)
+    row["team_series_tov"] = float(s.get("team_series_tov", 0.0))
+
     return row
 
 
@@ -533,6 +596,8 @@ _NOISE_SCALES: dict[str, float] = {
     "pts_vs_opp_last3": 4.5, "pts_vs_opp_avg": 2.5,
     "team_elo": 15.0, "opp_elo": 15.0, "elo_diff": 20.0,
     "series_game_num": 0.0, "team_series_wins": 0.0, "opp_series_wins": 0.0, "series_advantage": 0.0,
+    "series_games": 0.0, "series_pts_avg": 0.0, "series_ast_avg": 0.0,
+    "series_reb_avg": 0.0, "series_fg3m_avg": 0.0, "team_series_tov": 0.0,
     "ast_vs_opp_last3": 1.5, "ast_vs_opp_avg": 0.8,
     "reb_vs_opp_last3": 2.0, "reb_vs_opp_avg": 1.0,
 }
@@ -598,7 +663,7 @@ def _xgb_predict(player: PlayerGameState, opponent_id: str, is_home: bool, is_pl
     """
     if _MODELS is None:
         return None
-    history  = _player_history(player.player_id)
+    history  = _player_history(player.player_id, is_playoffs=is_playoffs, opp_team_id=opponent_id)
     position = _player_position(player.player_id)
     opp_def  = _opponent_def_stats(opponent_id, position)
     h2h      = _player_vs_opp(player.player_id, opponent_id)
@@ -630,6 +695,25 @@ def _xgb_predict(player: PlayerGameState, opponent_id: str, is_home: bool, is_pl
             "mean": float(np.mean(preds)),
             "std":  float(np.std(preds)),
         }
+
+    # Playoff series override: blend XGBoost output with actual series averages
+    # for every player automatically. XGBoost is anchored to career baselines and
+    # undersells role players who step up (e.g. Caruso averaging 24 in the series
+    # but XGBoost only predicts 11 from career data).
+    # Weight grows with number of series games played (more data = more trust).
+    # Residual series correction: the model now receives series_pts_avg / series_games
+    # as direct input features and has been trained on them. Keep a small residual blend
+    # (max 30%) as a safety net in case XGBoost underweights a strong series signal.
+    series_count = int(history.get("_series_count", 0))
+    if is_playoffs and series_count > 0:
+        series_weight = min(0.30, 0.15 * series_count)  # 0.15 per game, cap at 0.30
+        for t in _TARGETS:
+            vals = history.get(t, [])[:series_count]
+            if vals:
+                series_avg = float(np.mean(vals))
+                xgb_mean   = results[t]["mean"]
+                results[t]["mean"] = xgb_mean * (1 - series_weight) + series_avg * series_weight
+
     return results
 
 
@@ -787,16 +871,18 @@ class PredictionEngine:
         opponent: TeamGameState,
         is_home: bool,
         player_score_sum: int = 0,
+        opponent_score_sum: int = 0,
     ) -> TeamProjection:
         final_mean = player_score_sum if player_score_sum > 0 else team.score
         spread = max(4, int(final_mean * 0.10))
 
-        home_edge = (
-            context.home_team.offensive_rating - context.away_team.defensive_rating * 0.08 + context.home_advantage
-        ) - (
-            context.away_team.offensive_rating - context.home_team.defensive_rating * 0.08
-        )
-        win_prob = 1 / (1 + math.exp(-(home_edge / 8.0 + context.score_margin * 0.22)))
+        # Derive win probability from projected score margin so it's consistent
+        # with what the player model says. Logistic curve: σ(margin / 10).
+        if player_score_sum > 0 and opponent_score_sum > 0:
+            score_margin = player_score_sum - opponent_score_sum if is_home else opponent_score_sum - player_score_sum
+        else:
+            score_margin = context.score_margin
+        win_prob = 1 / (1 + math.exp(-(score_margin / 10.0)))
         team_win_prob = win_prob if is_home else 1 - win_prob
 
         # Build per-quarter score breakdown.

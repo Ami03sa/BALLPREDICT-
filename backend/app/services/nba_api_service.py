@@ -285,8 +285,10 @@ def _build_team_state_from_season_stats(team_raw: dict, score: int, season_playe
     players: list[PlayerGameState] = []
     for p in season_players:
         min_avg = float(p.get("MIN") or 0)
-        # Skip players who barely play — garbage-time guys inflate score predictions
-        if min_avg < 8.0:
+        # Only exclude players who truly never play (two-way inactive, etc.)
+        # Deep bench guys (2-7 min) still show on the roster UI and get low
+        # play_prob via the minutes-normalisation step, so they don't inflate totals.
+        if min_avg < 2.0:
             continue
         fg_pct = float(p.get("FG_PCT") or 0.45)
         three_pct = float(p.get("FG3_PCT") or 0.35)

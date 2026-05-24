@@ -1,5 +1,40 @@
 import type { SlateGame } from "../types";
 
+const TEAM_LOGO_MAP: Record<string, string> = {
+  atl: "atlanta", bos: "celtics", bkn: "nets", cha: "hornets",
+  chi: "bulls", cle: "cavs", dal: "mavs", den: "nuggets",
+  det: "pistons", gsw: "warriors", hou: "rockets", ind: "pacers",
+  lac: "clippers", lal: "lakers", mem: "grizzlies", mia: "heat",
+  mil: "bucks", min: "wolves", nop: "pelicans", nyk: "knicks",
+  okc: "okc", orl: "magic", phi: "76ers", phx: "suns",
+  por: "portland", sac: "sac", sas: "spurs", tor: "raptors",
+  uta: "jazz", was: "wizards",
+};
+
+function teamLogoPath(teamId: string): string {
+  const name = TEAM_LOGO_MAP[teamId.toLowerCase()];
+  return name ? `/logos/${name}.png` : "";
+}
+
+function TeamLogoImg({ teamId, abbr, size = 48 }: { teamId: string; abbr: string; size?: number }) {
+  const path = teamLogoPath(teamId);
+  if (!path) {
+    return (
+      <span className="font-mono text-base font-bold text-white">{abbr}</span>
+    );
+  }
+  return (
+    <img
+      src={path}
+      alt={abbr}
+      width={size}
+      height={size}
+      className="object-contain"
+      onError={(e) => { (e.currentTarget as HTMLImageElement).style.display = "none"; }}
+    />
+  );
+}
+
 function SlateCard({
   game,
   onOpen,
@@ -11,52 +46,68 @@ function SlateCard({
     <button
       type="button"
       onClick={() => onOpen(game.gameId)}
-      className="rounded-[28px] border border-white/8 bg-panelAlt/70 p-5 text-left transition hover:border-white/20 hover:bg-panelAlt"
+      className="border border-white/10 bg-black p-5 text-left transition hover:border-white/25 hover:bg-neutral-950"
     >
+      {/* Team logos row */}
       <div className="mb-4 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <span className="rounded-2xl bg-white/5 px-3 py-2 font-display text-lg text-white">
-            {game.awayAbbreviation}
-          </span>
-          <span className="text-muted">@</span>
-          <span className="rounded-2xl bg-white/5 px-3 py-2 font-display text-lg text-white">
-            {game.homeAbbreviation}
-          </span>
+        <div className="flex items-center gap-4">
+          <div className="flex flex-col items-center gap-1">
+            <TeamLogoImg teamId={game.awayAbbreviation} abbr={game.awayAbbreviation} size={48} />
+            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white">
+              {game.awayAbbreviation}
+            </span>
+          </div>
+          <span className="font-mono text-xs text-white">@</span>
+          <div className="flex flex-col items-center gap-1">
+            <TeamLogoImg teamId={game.homeAbbreviation} abbr={game.homeAbbreviation} size={48} />
+            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white">
+              {game.homeAbbreviation}
+            </span>
+          </div>
         </div>
-        <span className="rounded-full border border-success/20 bg-success/10 px-3 py-1 text-xs uppercase tracking-[0.2em] text-success">
+        <span className="border border-white/20 px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.4em] text-white">
           {game.status}
         </span>
       </div>
 
-      <h2 className="font-display text-2xl text-white">
-        {game.awayTeam} at {game.homeTeam}
+      {/* Matchup heading */}
+      <h2 className="font-mono text-xl font-bold italic text-white leading-tight">
+        {game.awayTeam} <span className="text-white">at</span> {game.homeTeam}
       </h2>
-      <p className="mt-2 text-sm leading-6 text-muted">{game.headline}</p>
+      <p className="mt-2 text-xs leading-5 text-white">{game.headline}</p>
 
-      <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-        <div className="rounded-2xl bg-black/20 p-3">
-          <p className="text-muted">Tipoff</p>
-          <p className="mt-1 font-semibold text-ink">{game.tipoff}</p>
+      {/* Tipoff / Broadcast */}
+      <div className="mt-4 grid grid-cols-2 gap-3 text-xs border-t border-white/20 pt-4">
+        <div>
+          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">Tipoff</p>
+          <p className="mt-1 font-mono font-bold text-white">{game.tipoff}</p>
         </div>
-        <div className="rounded-2xl bg-black/20 p-3">
-          <p className="text-muted">Broadcast</p>
-          <p className="mt-1 font-semibold text-ink">{game.broadcast}</p>
+        <div>
+          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">Broadcast</p>
+          <p className="mt-1 font-mono font-bold text-white">{game.broadcast}</p>
         </div>
       </div>
 
-      <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-        <div className="rounded-2xl bg-black/20 p-3">
-          <p className="text-muted">{game.awayAbbreviation} Record</p>
-          <p className="mt-1 font-semibold text-white">{game.awayRecord}</p>
+      {/* Records */}
+      <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+        <div>
+          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">{game.awayAbbreviation} Record</p>
+          <p className="mt-1 font-mono font-bold text-white">{game.awayRecord}</p>
         </div>
-        <div className="rounded-2xl bg-black/20 p-3">
-          <p className="text-muted">{game.homeAbbreviation} Record</p>
-          <p className="mt-1 font-semibold text-white">{game.homeRecord}</p>
+        <div>
+          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">{game.homeAbbreviation} Record</p>
+          <p className="mt-1 font-mono font-bold text-white">{game.homeRecord}</p>
         </div>
       </div>
 
-      <p className="mt-4 text-sm text-electric">{game.predictionHook}</p>
-      <p className="mt-5 font-semibold text-white">Open matchup analysis</p>
+      <p className="mt-4 text-xs text-white">{game.predictionHook}</p>
+
+      {/* CTA */}
+      <div className="mt-5 border-t border-white/20 pt-4">
+        <p className="font-mono text-[10px] font-bold uppercase tracking-[0.5em] text-white">
+          Open Analysis →
+        </p>
+      </div>
     </button>
   );
 }
@@ -71,27 +122,41 @@ export function SlatePage({
   onOpenGame: (gameId: string) => void;
 }) {
   return (
-    <main className="min-h-screen bg-grid bg-[size:22px_22px] px-4 py-6 md:px-8">
+    <main className="min-h-screen bg-black px-4 py-6 md:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
-        <section className="panel overflow-hidden p-6">
+        {/* Header */}
+        <section className="border border-white/10 bg-black p-6">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
-              <p className="metric-chip mb-3">Basketball intelligence engine</p>
-              <h1 className="font-display text-4xl text-white md:text-5xl">Today&apos;s NBA slate</h1>
-              <p className="mt-3 max-w-3xl text-sm leading-6 text-muted">
-                Start with the games. Click any matchup to open its own page with projected score, player stat predictions, coaching adjustments, and tactical reasoning.
+              {/* Logo + name row */}
+              <div className="flex items-center gap-4 mb-3">
+                <img
+                  src="/logo.png"
+                  alt="BallTalk"
+                  className="h-20 w-20 object-contain"
+                />
+                <h1 className="font-mono text-5xl font-bold italic text-white md:text-6xl tracking-tighter">
+                  BALLTALK<span className="text-white">.</span>
+                </h1>
+              </div>
+              <p className="font-mono text-[10px] uppercase tracking-[0.6em] text-white mb-1">
+                AI Prediction Model · Today&apos;s NBA Slate
+              </p>
+              <div className="h-px w-32 bg-white/30 mb-4" />
+              <p className="max-w-2xl text-xs leading-6 text-white">
+                Click any matchup for AI-projected scores, player stat predictions, series momentum analysis, and coaching adjustments.
               </p>
             </div>
-            <div className="rounded-3xl border border-white/10 bg-white/5 px-5 py-4">
-              <p className="text-xs uppercase tracking-[0.3em] text-muted">Scheduled today</p>
-              <p className="mt-1 font-display text-3xl text-white">{games.length}</p>
-              <p className="text-sm text-electric">games ready</p>
+            <div className="border border-white/10 px-6 py-5">
+              <p className="font-mono text-[9px] uppercase tracking-[0.5em] text-white">Scheduled Today</p>
+              <p className="mt-2 font-mono text-4xl font-bold text-white">{games.length}</p>
+              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.4em] text-white">Games Ready</p>
             </div>
           </div>
         </section>
 
         {slateError && (
-          <section className="rounded-2xl border border-red-500/20 bg-red-500/10 px-5 py-4 text-sm text-red-400">
+          <section className="border border-warning/30 bg-black px-5 py-4 font-mono text-sm text-warning">
             Failed to load games: {slateError}
           </section>
         )}
@@ -101,11 +166,12 @@ export function SlatePage({
             <SlateCard key={game.gameId} game={game} onOpen={onOpenGame} />
           ))}
           {!slateError && games.length === 0 && (
-            <p className="col-span-3 py-12 text-center text-muted">No games scheduled today.</p>
+            <p className="col-span-3 py-12 text-center font-mono text-xs uppercase tracking-[0.4em] text-white">
+              No games scheduled today.
+            </p>
           )}
         </section>
       </div>
     </main>
   );
 }
-

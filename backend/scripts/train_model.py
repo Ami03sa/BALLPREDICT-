@@ -84,6 +84,77 @@ def _classify_positions(logs: pd.DataFrame) -> pd.DataFrame:
     return career[["player_id", "position"]]
 
 
+def _compute_series_player_perf(logs: pd.DataFrame) -> pd.DataFrame:
+    """
+    For each playoff player-game, compute player's series performance stats
+    from games played BEFORE that game (no lookahead).
+
+    New columns:
+      series_games     — games played in this series before this game (0 for Game 1)
+      series_pts_avg   — player's pts avg in series so far (0 if no prior games)
+      series_ast_avg   — same for ast
+      series_reb_avg   — same for reb
+      series_fg3m_avg  — same for fg3m
+      team_series_tov  — team's avg TOV per game in series before this game
+    """
+    playoff = logs[logs["season_type"] == "Playoffs"].copy()
+    empty_cols = ["player_id", "game_id", "series_games",
+                  "series_pts_avg", "series_ast_avg", "series_reb_avg",
+                  "series_fg3m_avg", "team_series_tov"]
+    if playoff.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    # Canonical series key for each player: (player, season, sorted team pair)
+    playoff["_ps_key"] = (
+        playoff["player_id"].astype(str) + "__" + playoff["season"] + "__" +
+        playoff[["team_abbreviation", "opponent_abbreviation"]].apply(
+            lambda r: "_".join(sorted([r["team_abbreviation"], r["opponent_abbreviation"]])), axis=1
+        )
+    )
+    playoff = playoff.sort_values(["_ps_key", "game_date"]).copy()
+    g = playoff.groupby("_ps_key")
+
+    # Shift(1) excludes the current game → pure look-back, no data leakage
+    playoff["series_games"] = (
+        g["pts"].transform(lambda x: x.shift(1).expanding().count()).fillna(0).astype(int)
+    )
+    for stat in ["pts", "ast", "reb", "fg3m"]:
+        playoff[f"series_{stat}_avg"] = (
+            g[stat].transform(lambda x: x.shift(1).expanding().mean()).fillna(0.0)
+        )
+
+    # Team-level TOV: sum all players' TOV per game, then rolling avg before this game
+    team_tov_pg = (
+        playoff.groupby(["game_id", "team_abbreviation"])["tov"]
+        .sum().reset_index().rename(columns={"tov": "_game_tov"})
+    )
+    team_tov_pg = team_tov_pg.merge(
+        playoff[["game_id", "team_abbreviation", "opponent_abbreviation", "season", "game_date"]]
+        .drop_duplicates(["game_id", "team_abbreviation"]),
+        on=["game_id", "team_abbreviation"], how="left",
+    )
+    team_tov_pg["_ts_key"] = (
+        team_tov_pg["team_abbreviation"] + "__" + team_tov_pg["season"] + "__" +
+        team_tov_pg[["team_abbreviation", "opponent_abbreviation"]].apply(
+            lambda r: "_".join(sorted([r["team_abbreviation"], r["opponent_abbreviation"]])), axis=1
+        )
+    )
+    team_tov_pg = team_tov_pg.sort_values(["_ts_key", "game_date"])
+    team_tov_pg["team_series_tov"] = (
+        team_tov_pg.groupby("_ts_key")["_game_tov"]
+        .transform(lambda x: x.shift(1).expanding().mean())
+        .fillna(14.0)
+    )
+
+    playoff = playoff.merge(
+        team_tov_pg[["game_id", "team_abbreviation", "team_series_tov"]].drop_duplicates(),
+        on=["game_id", "team_abbreviation"], how="left",
+    )
+    playoff["team_series_tov"] = playoff["team_series_tov"].fillna(14.0)
+
+    return playoff[empty_cols].drop_duplicates(["player_id", "game_id"])
+
+
 def _compute_series_features(game_results: pd.DataFrame, logs: pd.DataFrame) -> pd.DataFrame:
     """
     For each playoff player-game, compute:
@@ -164,7 +235,7 @@ def _compute_team_elo(game_results: pd.DataFrame, k: float = 20.0, init: float =
     return pd.DataFrame(records)
 
 
-def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
+def load_data() -> tuple:
     conn = sqlite3.connect(DB_PATH)
 
     logs = pd.read_sql_query("""
@@ -222,17 +293,22 @@ def load_data() -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     print("  Computing series context features...")
     series_df = _compute_series_features(game_results, logs)
 
+    # Compute player-level series performance features (new)
+    print("  Computing player series performance features...")
+    series_perf_df = _compute_series_player_perf(logs)
+    print(f"  Series perf rows: {len(series_perf_df):,}")
+
     # Classify each player into G/F/C by career play style
     positions = _classify_positions(logs)
     pos_counts = positions["position"].value_counts().to_dict()
     print(f"  Position split — G:{pos_counts.get('G',0)}  F:{pos_counts.get('F',0)}  C:{pos_counts.get('C',0)}")
 
-    return logs, def_stats, positions, elo_df, series_df
+    return logs, def_stats, positions, elo_df, series_df, series_perf_df
 
 
 # ── Feature engineering ───────────────────────────────────────────────────────
 
-def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame, positions: pd.DataFrame, elo_df: pd.DataFrame, series_df: pd.DataFrame | None = None) -> pd.DataFrame:
+def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame, positions: pd.DataFrame, elo_df: pd.DataFrame, series_df: pd.DataFrame | None = None, series_perf_df: pd.DataFrame | None = None) -> pd.DataFrame:
     print("Engineering features...")
 
     logs = logs.sort_values(["player_id", "game_date"]).reset_index(drop=True)
@@ -363,6 +439,18 @@ def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame, positions: pd.Da
     logs["opp_series_wins"]   = logs.get("opp_series_wins",   pd.Series(0, index=logs.index)).fillna(0).astype(int)
     logs["series_advantage"]  = logs.get("series_advantage",  pd.Series(0, index=logs.index)).fillna(0).astype(int)
 
+    # Player-level series performance — how the player has actually performed in this series.
+    # Non-playoff rows get all-zero defaults (series_games=0 acts as the "not in series" flag).
+    if series_perf_df is not None and not series_perf_df.empty:
+        print("  Merging player series performance features...")
+        logs = logs.merge(series_perf_df, on=["player_id", "game_id"], how="left")
+    logs["series_games"]     = logs.get("series_games",     pd.Series(0, index=logs.index)).fillna(0).astype(int)
+    logs["series_pts_avg"]   = logs.get("series_pts_avg",   pd.Series(0.0, index=logs.index)).fillna(0.0)
+    logs["series_ast_avg"]   = logs.get("series_ast_avg",   pd.Series(0.0, index=logs.index)).fillna(0.0)
+    logs["series_reb_avg"]   = logs.get("series_reb_avg",   pd.Series(0.0, index=logs.index)).fillna(0.0)
+    logs["series_fg3m_avg"]  = logs.get("series_fg3m_avg",  pd.Series(0.0, index=logs.index)).fillna(0.0)
+    logs["team_series_tov"]  = logs.get("team_series_tov",  pd.Series(0.0, index=logs.index)).fillna(0.0)
+
     feature_cols = _feature_cols()
     logs = logs.dropna(subset=feature_cols + TARGETS)
 
@@ -385,6 +473,9 @@ def _feature_cols() -> list[str]:
         cols += [f"{stat}_vs_opp_last3", f"{stat}_vs_opp_avg"]
     cols += ["team_elo", "opp_elo", "elo_diff"]
     cols += ["series_game_num", "team_series_wins", "opp_series_wins", "series_advantage"]
+    # Player-level series performance — zero for regular season / Game 1
+    cols += ["series_games", "series_pts_avg", "series_ast_avg",
+             "series_reb_avg", "series_fg3m_avg", "team_series_tov"]
     return cols
 
 
@@ -449,10 +540,10 @@ def save_models(models: dict, metrics: dict) -> None:
 # ── Main ──────────────────────────────────────────────────────────────────────
 
 def main() -> None:
-    logs, def_stats, positions, elo_df, series_df = load_data()
+    logs, def_stats, positions, elo_df, series_df, series_perf_df = load_data()
     print(f"Loaded {len(logs):,} player-game rows")
 
-    df = build_features(logs, def_stats, positions, elo_df, series_df)
+    df = build_features(logs, def_stats, positions, elo_df, series_df, series_perf_df)
 
     print("\nTraining XGBoost models...")
     models, metrics = train_models(df)

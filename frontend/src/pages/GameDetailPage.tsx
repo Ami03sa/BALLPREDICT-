@@ -2,39 +2,37 @@ import { useEffect, useState } from "react";
 import { fetchGamePreview, fetchSnapshot } from "../lib/api";
 import type { GamePreview, PlayerProjection, Snapshot } from "../types";
 
-// NBA team tricode → numeric team ID for logo CDN
-const NBA_TEAM_IDS: Record<string, string> = {
-  atl: "1610612737", bos: "1610612738", bkn: "1610612751", cha: "1610612766",
-  chi: "1610612741", cle: "1610612739", dal: "1610612742", den: "1610612743",
-  det: "1610612765", gsw: "1610612744", hou: "1610612745", ind: "1610612754",
-  lac: "1610612746", lal: "1610612747", mem: "1610612763", mia: "1610612748",
-  mil: "1610612749", min: "1610612750", nop: "1610612740", nyk: "1610612752",
-  okc: "1610612760", orl: "1610612753", phi: "1610612755", phx: "1610612756",
-  por: "1610612757", sac: "1610612758", sas: "1610612759", tor: "1610612761",
-  uta: "1610612762", was: "1610612764",
+// Local logo map
+const TEAM_LOGO_MAP: Record<string, string> = {
+  atl: "atlanta", bos: "celtics", bkn: "nets", cha: "hornets",
+  chi: "bulls", cle: "cavs", dal: "mavs", den: "nuggets",
+  det: "pistons", gsw: "warriors", hou: "rockets", ind: "pacers",
+  lac: "clippers", lal: "lakers", mem: "grizzlies", mia: "heat",
+  mil: "bucks", min: "wolves", nop: "pelicans", nyk: "knicks",
+  okc: "okc", orl: "magic", phi: "76ers", phx: "suns",
+  por: "portland", sac: "sac", sas: "spurs", tor: "raptors",
+  uta: "jazz", was: "wizards",
 };
 
-function teamLogoUrl(teamId: string): string {
-  const id = NBA_TEAM_IDS[teamId.toLowerCase()];
-  if (!id) return "";
-  return `https://cdn.nba.com/logos/nba/${id}/global/L/logo.svg`;
+function teamLogoPath(teamId: string): string {
+  const name = TEAM_LOGO_MAP[teamId.toLowerCase()];
+  return name ? `/logos/${name}.png` : "";
 }
 
 function playerHeadshotUrl(playerId: string): string {
-  // NBA CDN headshots use the numeric personId
   return `https://cdn.nba.com/headshots/nba/latest/1040x760/${playerId}.png`;
 }
 
 function TeamLogo({ teamId, teamName, size = 80 }: { teamId: string; teamName: string; size?: number }) {
   const [errored, setErrored] = useState(false);
-  const url = teamLogoUrl(teamId);
+  const path = teamLogoPath(teamId);
   const abbr = teamId.toUpperCase().slice(0, 3);
 
-  if (!url || errored) {
+  if (!path || errored) {
     return (
       <div
         style={{ width: size, height: size }}
-        className="flex items-center justify-center rounded-full bg-white/10 font-display text-xl font-bold text-white"
+        className="flex items-center justify-center border border-white/10 bg-white/5 font-mono text-xl font-bold text-white"
       >
         {abbr}
       </div>
@@ -43,11 +41,11 @@ function TeamLogo({ teamId, teamName, size = 80 }: { teamId: string; teamName: s
 
   return (
     <img
-      src={url}
+      src={path}
       alt={teamName}
       width={size}
       height={size}
-      className="object-contain drop-shadow-lg"
+      className="object-contain"
       onError={() => setErrored(true)}
     />
   );
@@ -74,7 +72,7 @@ function PlayerFace({
           : "cursor-pointer active:scale-95"
         }`}
     >
-      <div className="relative overflow-hidden rounded-xl border-2 border-white/10 bg-white/5 transition group-hover:border-electric/60"
+      <div className="relative overflow-hidden border border-white/10 bg-white/5 transition group-hover:border-white/30"
            style={{ width: 110, height: 120 }}>
         {!imgErrored ? (
           <img
@@ -84,22 +82,22 @@ function PlayerFace({
             onError={() => setImgErrored(true)}
           />
         ) : (
-          <div className="flex h-full w-full items-center justify-center text-2xl font-bold text-white">
+          <div className="flex h-full w-full items-center justify-center font-mono text-2xl font-bold text-white">
             {player.playerName.split(" ").map((n) => n[0]).join("").slice(0, 2)}
           </div>
         )}
         {player.rotationRole === "starter" && !isDnp && (
-          <span className="absolute bottom-1.5 left-1.5 rounded-md bg-electric px-1.5 py-0.5 text-[9px] font-bold uppercase tracking-wider text-canvas">
+          <span className="absolute bottom-1.5 left-1.5 border border-white/30 bg-black px-1.5 py-0.5 font-mono text-[9px] font-bold uppercase tracking-wider text-white">
             Starter
           </span>
         )}
       </div>
       <div>
-        <p className="w-[110px] truncate text-xs font-medium leading-tight text-white">
+        <p className="w-[110px] truncate font-mono text-xs font-medium leading-tight text-white">
           {player.playerName.split(" ").slice(-1)[0]}
         </p>
         {isDnp && (
-          <p className="text-[9px] uppercase tracking-wider text-muted">DNP</p>
+          <p className="font-mono text-[9px] uppercase tracking-wider text-white">DNP</p>
         )}
       </div>
     </button>
@@ -126,12 +124,12 @@ function PlayerRoster({
   });
 
   return (
-    <div className="panel p-5">
+    <div className="border border-white/10 bg-black p-5">
       <div className="mb-4 flex items-center gap-3">
         <TeamLogo teamId={teamId} teamName={teamName} size={32} />
         <div>
-          <h3 className="font-display text-lg text-white">{teamName}</h3>
-          <p className="text-xs text-muted">Tap a player to see stats &amp; predictions</p>
+          <h3 className="font-mono text-base font-bold uppercase tracking-[0.3em] text-white">{teamName}</h3>
+          <p className="font-mono text-[10px] uppercase tracking-[0.3em] text-white">Tap a player to see stats &amp; predictions</p>
         </div>
       </div>
       <div className="flex flex-wrap gap-3">
@@ -162,6 +160,9 @@ function NBAScoreboard({
   broadcast,
   isCloseGame,
   predictedMargin,
+  blowoutAlert,
+  blowoutScore,
+  blowoutSignals,
 }: {
   quarter: number;
   clock: string;
@@ -175,6 +176,9 @@ function NBAScoreboard({
   broadcast: string;
   isCloseGame?: boolean;
   predictedMargin?: number;
+  blowoutAlert?: boolean;
+  blowoutScore?: { home: number; away: number } | null;
+  blowoutSignals?: string[];
 }) {
   const isFinal = status === "final";
   const isLive = status === "live";
@@ -192,18 +196,18 @@ function NBAScoreboard({
       <div className="flex flex-1 flex-col items-center gap-2 text-center">
         <TeamLogo teamId={team.teamId} teamName={team.teamName} size={80} />
         <div>
-          <p className="font-display text-xl text-white">{team.teamName.split(" ").slice(-1)[0]}</p>
-          <p className="text-xs uppercase tracking-wider text-muted">{team.teamId.toUpperCase()}</p>
+          <p className="font-mono text-base font-bold uppercase tracking-[0.3em] text-white">{team.teamName.split(" ").slice(-1)[0]}</p>
+          <p className="font-mono text-[10px] uppercase tracking-[0.4em] text-white">{team.teamId.toUpperCase()}</p>
         </div>
         <div className="flex flex-col items-center gap-0.5">
-          <span className="font-display text-3xl tabular-nums leading-none text-electric">
+          <span className="font-mono text-3xl font-bold tabular-nums leading-none text-white">
             {predicted}
           </span>
-          <span className="text-[9px] uppercase tracking-widest text-muted">
+          <span className="font-mono text-[9px] uppercase tracking-widest text-white">
             {isFinal ? "AI Predicted" : isLive ? "Proj. Final" : "Predicted"}
           </span>
           {isFinal && (
-            <span className="mt-1 text-[9px] uppercase tracking-widest text-muted/60">
+            <span className="mt-1 font-mono text-[9px] uppercase tracking-widest text-white">
               Actual: {actualScore}
             </span>
           )}
@@ -213,10 +217,9 @@ function NBAScoreboard({
   }
 
   return (
-    <div className="panel overflow-hidden">
+    <div className="border border-white/10 bg-black overflow-hidden">
       {/* Status bar */}
-      <div className={`px-6 py-2 text-center text-xs font-semibold uppercase tracking-widest
-        ${isFinal ? "bg-white/8 text-muted" : isLive ? "bg-electric/20 text-electric" : "bg-accent/20 text-accent"}`}>
+      <div className="border-b border-white/10 px-6 py-2 text-center font-mono text-xs font-bold uppercase tracking-[0.5em] text-white">
         {phaseLabel}
       </div>
 
@@ -224,28 +227,56 @@ function NBAScoreboard({
       <div className="flex items-center justify-between gap-4 px-6 py-8 md:px-12">
         <TeamBlock team={awayTeam} predicted={awayPredicted} actualScore={awayTeam.score} />
 
-        {/* Live / final score — shows actual game score only when game is in progress or final */}
+        {/* Live / final score */}
         <div className="flex flex-col items-center gap-2">
           <div className="flex items-center gap-4 md:gap-8">
             {isScheduled ? (
-              <span className="font-display text-sm uppercase tracking-widest text-muted">Not Started</span>
+              <span className="font-mono text-sm uppercase tracking-widest text-white">Not Started</span>
             ) : (
               <>
-                <span className="font-display text-6xl tabular-nums leading-none text-white md:text-7xl">
+                <span className="font-mono text-6xl font-bold tabular-nums leading-none text-white md:text-7xl">
                   {awayTeam.score}
                 </span>
-                <span className="text-2xl text-white/20">–</span>
-                <span className="font-display text-6xl tabular-nums leading-none text-white md:text-7xl">
+                <span className="font-mono text-2xl text-white">–</span>
+                <span className="font-mono text-6xl font-bold tabular-nums leading-none text-white md:text-7xl">
                   {homeTeam.score}
                 </span>
               </>
             )}
           </div>
           {isCloseGame && (
-            <div className="rounded-full border border-yellow-400/40 bg-yellow-400/10 px-3 py-1 text-center">
-              <p className="text-[10px] font-semibold uppercase tracking-widest text-yellow-300">
+            <div className="border border-white/20 px-3 py-1 text-center">
+              <p className="font-mono text-[10px] font-bold uppercase tracking-widest text-white">
                 Margin: {absMargin} pts — Too close to call
               </p>
+            </div>
+          )}
+          {blowoutAlert && blowoutScore && (
+            <div className="flex flex-col items-center gap-1.5">
+              {/* Blowout badge */}
+              <div className="flex items-center gap-1.5 border border-white/30 px-3 py-1">
+                <p className="font-mono text-[10px] font-bold uppercase tracking-widest text-white">
+                  ⚡ Blowout Alert
+                </p>
+              </div>
+              {/* Blowout score */}
+              <div className="border border-white/20 px-4 py-2 text-center">
+                <p className="font-mono text-[9px] uppercase tracking-widest text-white mb-1">
+                  If blowout conditions hold
+                </p>
+                <p className="font-mono text-base font-bold tabular-nums text-white">
+                  {awayTeam.teamId.toUpperCase()} {blowoutScore.away} — {blowoutScore.home} {homeTeam.teamId.toUpperCase()}
+                </p>
+                {blowoutSignals && blowoutSignals.length > 0 && (
+                  <div className="mt-2 flex flex-col gap-0.5">
+                    {blowoutSignals.map((sig, i) => (
+                      <p key={i} className="font-mono text-[9px] text-white">
+                        · {sig}
+                      </p>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
           )}
         </div>
@@ -254,7 +285,7 @@ function NBAScoreboard({
       </div>
 
       {/* Game info footer */}
-      <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 border-t border-white/6 px-6 py-3 text-xs text-muted">
+      <div className="flex flex-wrap items-center justify-center gap-x-4 gap-y-1 border-t border-white/10 px-6 py-3 font-mono text-[10px] uppercase tracking-[0.3em] text-white">
         {broadcast && broadcast !== "NBA TV" && <span>{broadcast}</span>}
         {broadcast && <span>·</span>}
         <span>{arena}</span>
@@ -305,10 +336,10 @@ export function GameDetailPage({
 
   if (loading) {
     return (
-      <main className="min-h-screen bg-grid bg-[size:22px_22px] px-4 py-6 md:px-8">
+      <main className="min-h-screen bg-black px-4 py-6 md:px-8">
         <div className="mx-auto max-w-4xl">
-          <div className="panel p-8 text-center">
-            <p className="text-sm text-muted">Loading game...</p>
+          <div className="border border-white/10 bg-black p-8 text-center">
+            <p className="font-mono text-xs uppercase tracking-[0.4em] text-white">Loading game...</p>
           </div>
         </div>
       </main>
@@ -317,18 +348,18 @@ export function GameDetailPage({
 
   if (error || !preview || !snapshot) {
     return (
-      <main className="min-h-screen bg-grid bg-[size:22px_22px] px-4 py-6 md:px-8">
+      <main className="min-h-screen bg-black px-4 py-6 md:px-8">
         <div className="mx-auto max-w-4xl flex flex-col gap-5">
           <button
             type="button"
             onClick={onBack}
-            className="self-start rounded-full border border-white/10 px-4 py-2 text-sm text-ink transition hover:border-white/20 hover:bg-white/5"
+            className="self-start border border-white/10 px-4 py-2 font-mono text-xs uppercase tracking-[0.4em] text-white transition hover:border-white/25"
           >
-            ← Back to games
+            ← Back
           </button>
-          <div className="panel p-8">
-            <p className="text-sm font-semibold text-red-400">Error loading game</p>
-            <p className="mt-2 text-sm text-muted">{error ?? "No data returned from API"}</p>
+          <div className="border border-white/10 bg-black p-8">
+            <p className="font-mono text-xs font-bold uppercase tracking-[0.4em] text-warning">Error loading game</p>
+            <p className="mt-2 font-mono text-xs text-white">{error ?? "No data returned from API"}</p>
           </div>
         </div>
       </main>
@@ -342,14 +373,14 @@ export function GameDetailPage({
   const awayPredictedScore = snapshot.awayTeam.finalScoreMean;
 
   return (
-    <main className="min-h-screen bg-grid bg-[size:22px_22px] px-4 py-6 md:px-8">
+    <main className="min-h-screen bg-black px-4 py-6 md:px-8">
       <div className="mx-auto flex max-w-4xl flex-col gap-5">
         <button
           type="button"
           onClick={onBack}
-          className="self-start rounded-full border border-white/10 px-4 py-2 text-sm text-ink transition hover:border-white/20 hover:bg-white/5"
+          className="self-start border border-white/10 px-4 py-2 font-mono text-xs uppercase tracking-[0.4em] text-white transition hover:border-white/25"
         >
-          ← Back to games
+          ← Back
         </button>
 
         <NBAScoreboard
@@ -365,6 +396,9 @@ export function GameDetailPage({
           broadcast={preview.broadcast}
           isCloseGame={snapshot.isCloseGame}
           predictedMargin={snapshot.predictedMargin}
+          blowoutAlert={snapshot.blowoutAlert}
+          blowoutScore={snapshot.blowoutScore}
+          blowoutSignals={snapshot.blowoutSignals}
         />
 
         <PlayerRoster

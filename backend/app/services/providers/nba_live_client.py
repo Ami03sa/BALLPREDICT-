@@ -38,16 +38,18 @@ class NbaLiveClient:
         }
 
     async def _cdn_get(self, path: str) -> dict:
+        timeout = httpx.Timeout(connect=4.0, read=8.0, write=4.0, pool=4.0)
         async with httpx.AsyncClient(
-            timeout=12.0, headers=self._cdn_headers, follow_redirects=True
+            timeout=timeout, headers=self._cdn_headers, follow_redirects=True
         ) as client:
             r = await client.get(f"{settings.nba_live_base_url}/{path}")
             r.raise_for_status()
             return r.json()
 
     async def _stats_get(self, endpoint: str, params: dict) -> dict:
+        timeout = httpx.Timeout(connect=4.0, read=8.0, write=4.0, pool=4.0)
         async with httpx.AsyncClient(
-            timeout=20.0, headers=self._stats_headers, follow_redirects=True
+            timeout=timeout, headers=self._stats_headers, follow_redirects=True
         ) as client:
             r = await client.get(f"{_NBA_STATS_URL}/{endpoint}", params=params)
             r.raise_for_status()
@@ -280,23 +282,33 @@ class NbaLiveClient:
         Returns {player_id_str: status} where status is one of:
           "Out", "Doubtful", "Questionable", "Probable", "Available"
         Only "Out" and "Doubtful" should be treated as DNP.
+        Tries "Playoffs" first during playoff window (April–June), falls back to "Regular Season".
         """
         from datetime import date
-        today = date.today().strftime("%m/%d/%Y")
-        try:
-            data = await self._stats_get("leagueinjuryreport", {
-                "Season": self._current_season(),
-                "SeasonType": "Regular Season",
-                "LeagueId": "00",
-                "Date": today,
-                "GameNumber": 0,
-            })
-            rs = next((r for r in data.get("resultSets", []) if r["name"] == "LeagueInjuryReport"), {})
-            headers = rs.get("headers", [])
-            rows = [dict(zip(headers, row)) for row in rs.get("rowSet", [])]
-            return {str(r["Player_ID"]): r["Current_Status"] for r in rows if r.get("Player_ID")}
-        except Exception:
-            return {}
+        today = date.today()
+        today_str = today.strftime("%m/%d/%Y")
+        # Playoff window: late April through mid-June
+        is_playoff_window = today.month in (4, 5, 6)
+        season_types = (["Playoffs", "Regular Season"] if is_playoff_window
+                        else ["Regular Season"])
+        for season_type in season_types:
+            try:
+                data = await self._stats_get("leagueinjuryreport", {
+                    "Season": self._current_season(),
+                    "SeasonType": season_type,
+                    "LeagueId": "00",
+                    "Date": today_str,
+                    "GameNumber": 0,
+                })
+                rs = next((r for r in data.get("resultSets", []) if r["name"] == "LeagueInjuryReport"), {})
+                headers = rs.get("headers", [])
+                rows = [dict(zip(headers, row)) for row in rs.get("rowSet", [])]
+                result = {str(r["Player_ID"]): r["Current_Status"] for r in rows if r.get("Player_ID")}
+                if result:
+                    return result
+            except Exception:
+                continue
+        return {}
 
     async def fetch_vegas_totals(self, api_key: str) -> tuple[dict[tuple[str, str], float], dict[tuple[str, str], float], dict[tuple[str, str], str]]:
         """

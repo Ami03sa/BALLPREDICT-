@@ -61,5 +61,18 @@
   "ast_vs_opp_last3",
   "ast_vs_opp_avg",
   "reb_vs_opp_last3",
-  "reb_vs_opp_avg"
+  "reb_vs_opp_avg",
+  "team_elo",
+  "opp_elo",
+  "elo_diff",
+  "series_game_num",
+  "team_series_wins",
+  "opp_series_wins",
+  "series_advantage",
+  "series_games",
+  "series_pts_avg",
+  "series_ast_avg",
+  "series_reb_avg",
+  "series_fg3m_avg",
+  "team_series_tov"
 ]

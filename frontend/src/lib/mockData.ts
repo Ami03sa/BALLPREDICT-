@@ -434,6 +434,11 @@ export const mockSnapshot: Snapshot = {
   ],
   possessionFeed: [],
   winProbabilitySeries: [{ minute: 0, home: 0.5, away: 0.5 }],
+  isCloseGame: false,
+  predictedMargin: 0,
+  blowoutAlert: false,
+  blowoutScore: null,
+  blowoutSignals: [],
 };
 
 export const mockPlayerDetail: PlayerDetail = {

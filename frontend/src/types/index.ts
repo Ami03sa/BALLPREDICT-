@@ -78,6 +78,9 @@ export type Snapshot = {
   }[];
   isCloseGame: boolean;
   predictedMargin: number;
+  blowoutAlert?: boolean;
+  blowoutScore?: { home: number; away: number } | null;
+  blowoutSignals?: string[];
 };
 
 export type SlateGame = {
