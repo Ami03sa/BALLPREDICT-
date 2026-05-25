@@ -1652,29 +1652,29 @@ class ProjectionService:
             breakout_prob = round(min(0.95, raw_prob * playoff_mult), 2)
             breakout_alert = breakout_prob >= 0.20 or bo_pts >= personal_threshold
 
-            # Rebuild projected_stats.mean with streak + usage adjustments applied.
-            # Floor / ceiling bands shift proportionally so the UI stays consistent.
+            # Rebuild projected_stats with streak + usage adjustments applied.
+            # Low / high bands shift proportionally so the UI stays consistent.
             updated_mean = m.model_copy(update={
                 "points":   adj_pts,
                 "assists":  adj_ast,
                 "rebounds": adj_reb,
             })
-            floor_s = proj.projected_stats.floor
-            ceil_s  = proj.projected_stats.ceiling
-            updated_floor = floor_s.model_copy(update={
-                "points":   round(floor_s.points   * combined_factor, 1),
-                "assists":  round(floor_s.assists  * combined_factor, 1),
-                "rebounds": round(floor_s.rebounds * combined_factor, 1),
+            low_s  = proj.projected_stats.low
+            high_s = proj.projected_stats.high
+            updated_low = low_s.model_copy(update={
+                "points":   round(low_s.points   * combined_factor, 1),
+                "assists":  round(low_s.assists  * combined_factor, 1),
+                "rebounds": round(low_s.rebounds * combined_factor, 1),
             })
-            updated_ceil = ceil_s.model_copy(update={
-                "points":   round(ceil_s.points   * combined_factor, 1),
-                "assists":  round(ceil_s.assists  * combined_factor, 1),
-                "rebounds": round(ceil_s.rebounds * combined_factor, 1),
+            updated_high = high_s.model_copy(update={
+                "points":   round(high_s.points   * combined_factor, 1),
+                "assists":  round(high_s.assists  * combined_factor, 1),
+                "rebounds": round(high_s.rebounds * combined_factor, 1),
             })
             updated_stats = proj.projected_stats.model_copy(update={
-                "mean":    updated_mean,
-                "floor":   updated_floor,
-                "ceiling": updated_ceil,
+                "mean": updated_mean,
+                "low":  updated_low,
+                "high": updated_high,
             })
 
             return proj.model_copy(update={
