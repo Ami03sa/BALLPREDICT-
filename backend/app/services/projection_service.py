@@ -837,13 +837,13 @@ class ProjectionService:
             intensity_boost = 0.0
             if is_playoffs:
                 if is_elimination:
-                    intensity_boost = 3.0
+                    intensity_boost = 8.0   # backs fully against the wall — do or die
                 elif series_deficit >= 2:
-                    intensity_boost = 2.0
+                    intensity_boost = 6.0   # desperate, need multiple wins to survive
                 elif series_deficit == 1:
-                    intensity_boost = 1.5
+                    intensity_boost = 4.0   # must-win to stay in the series
                 if is_closeout:
-                    intensity_boost += 1.0
+                    intensity_boost += 2.5  # closing team's professionalism/focus bonus
 
             # ── Regular season: simple model, no series complexity ──────────
             # For non-playoff games there is no series data and the extra
@@ -1050,6 +1050,31 @@ class ProjectionService:
             is_closeout=away_is_closeout,
         )
 
+        # ── Defensive intensity penalty ───────────────────────────────────────
+        # When a team is in must-win/elimination mode their defence spikes too.
+        # The opponent scores fewer points because the desperate team locks in.
+        # Penalty = 40% of the must-win team's intensity boost applied to opponent.
+        if is_playoffs:
+            home_intensity = 0.0
+            if home_is_elimination:    home_intensity = 8.0
+            elif home_series_deficit >= 2: home_intensity = 6.0
+            elif home_series_deficit == 1: home_intensity = 4.0
+            if home_is_closeout:       home_intensity += 2.5
+
+            away_intensity = 0.0
+            if away_is_elimination:    away_intensity = 8.0
+            elif away_series_deficit >= 2: away_intensity = 6.0
+            elif away_series_deficit == 1: away_intensity = 4.0
+            if away_is_closeout:       away_intensity += 2.5
+
+            # Desperate team's defence suppresses the opponent's offence
+            away_total = round(away_total - home_intensity * 0.4)
+            home_total = round(home_total - away_intensity * 0.4)
+
+            # Floor: never let a penalty push a team below 85 pts
+            home_total = max(85, home_total)
+            away_total = max(85, away_total)
+
         # Rescale individual players so their scores sum to the team total.
         # This keeps individual predictions correlated with the final score —
         # if the team total moves up/down, every player moves proportionally.
@@ -1098,18 +1123,20 @@ class ProjectionService:
                         reverse=True,
                     )[:2]
                     _elim_boost_pids.update(p.player_id for p in top2)
-            # Also give a smaller boost to the top scorer on a team down 1 game
+            # Also boost top scorers on teams down 1 or 2 games
             for team_projs, deficit in [
                 (home_player_projections, home_series_deficit),
                 (away_player_projections, away_series_deficit),
             ]:
-                if deficit == 1:
-                    top1 = sorted(
+                if deficit >= 1:
+                    # Top 2 scorers for teams down 2, top 1 for teams down 1
+                    n = 2 if deficit >= 2 else 1
+                    top_n = sorted(
                         [p for p in team_projs if p.availability_status != "dnp"],
                         key=lambda p: p.projected_stats.mean.points,
                         reverse=True,
-                    )[:1]
-                    _elim_boost_pids.update(p.player_id for p in top1)
+                    )[:n]
+                    _elim_boost_pids.update(p.player_id for p in top_n)
 
         def _apply_volatility(
             proj: PlayerProjection,
@@ -1126,9 +1153,34 @@ class ProjectionService:
             adj_breakout_pct = min(1.0, raw_breakout_pct * opp_factor)
 
             # Elimination / high-stakes star boost: top players on must-win teams
-            # get an extra 20% boost to their breakout probability.
+            # elevate their breakout probability — stars rise to the moment.
+            # Elimination (0-3, 1-3, 2-3): +40% breakout chance
+            # Series deficit >= 2: +30% breakout chance
+            # Series deficit == 1: +20% breakout chance
             if proj.player_id in _elim_boost_pids:
-                adj_breakout_pct = min(1.0, adj_breakout_pct * 1.20)
+                # Determine which tier this player's team is in
+                is_in_elim_team = any(
+                    p.player_id == proj.player_id and is_elim
+                    for team_p, is_elim in [
+                        (home_player_projections, home_is_elimination),
+                        (away_player_projections, away_is_elimination),
+                    ]
+                    for p in team_p
+                )
+                is_in_deficit2_team = any(
+                    p.player_id == proj.player_id and deficit >= 2
+                    for team_p, deficit in [
+                        (home_player_projections, home_series_deficit),
+                        (away_player_projections, away_series_deficit),
+                    ]
+                    for p in team_p
+                )
+                if is_in_elim_team:
+                    adj_breakout_pct = min(1.0, adj_breakout_pct * 1.40)
+                elif is_in_deficit2_team:
+                    adj_breakout_pct = min(1.0, adj_breakout_pct * 1.30)
+                else:
+                    adj_breakout_pct = min(1.0, adj_breakout_pct * 1.20)
 
             m = proj.projected_stats.mean
 
