@@ -100,6 +100,37 @@ def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
             blk_list = [float(v) for v in cols[5]]
             pts_rn = list(zip(pts_list, rn_list))
 
+            weighted_mean = _weighted_mean(pts_rn)
+            season_mean = sum(pts_list) / len(pts_list) if pts_list else 0.0
+
+            # ── Hot / Cold streak factor ──────────────────────────────────
+            # Last 5 games (rn=1..5) vs the 30-game weighted mean.
+            # Hot streak: scoring 15%+ above weighted mean → boost factor
+            # Cold streak: scoring 15%+ below weighted mean → penalty factor
+            # Scale: 15-25% off = mild, 25%+ = strong. Clamped [0.88, 1.12].
+            last5_pts = [pts for pts, rn in zip(pts_list, rn_list) if rn <= 5]
+            streak_factor = 1.0
+            if last5_pts and weighted_mean > 0:
+                last5_mean = sum(last5_pts) / len(last5_pts)
+                pct_diff = (last5_mean - weighted_mean) / weighted_mean
+                if pct_diff >= 0.25:
+                    streak_factor = 1.12   # very hot
+                elif pct_diff >= 0.15:
+                    streak_factor = 1.07   # hot
+                elif pct_diff <= -0.25:
+                    streak_factor = 0.88   # very cold
+                elif pct_diff <= -0.15:
+                    streak_factor = 0.93   # cold
+
+            # ── Personalised breakout threshold ───────────────────────────
+            # Fixed 30-pt threshold is wrong for bench players and wrong for
+            # superstars. Use 125% of weighted mean, floored at 25 pts.
+            # Examples:
+            #   Wemby (avg 27 pts) → threshold = 34 pts
+            #   Mitchell (avg 26 pts) → threshold = 33 pts
+            #   Bench player (avg 10 pts) → threshold = 25 pts (floor)
+            personal_breakout_threshold = max(25.0, round(weighted_mean * 1.25))
+
             result[pid] = {
                 "pts_std":          round(_std(pts_list), 1),
                 "ast_std":          round(_std(ast_list), 1),
@@ -108,10 +139,13 @@ def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
                 "stl_std":          round(_std(stl_list), 1),
                 "blk_std":          round(_std(blk_list), 1),
                 "breakout_pct":     round(
-                    sum(1 for p in pts_list if p >= _BREAKOUT_THRESHOLD) / len(pts_list), 3
+                    sum(1 for p in pts_list if p >= personal_breakout_threshold) / len(pts_list), 3
                 ),
-                "weighted_mean_pts": round(_weighted_mean(pts_rn), 1),
-                # Conditional means: what they average across the board on breakout nights
+                "weighted_mean_pts":        round(weighted_mean, 1),
+                "season_pts_per_game":      round(season_mean, 1),
+                "streak_factor":            round(streak_factor, 3),
+                "breakout_threshold":       personal_breakout_threshold,
+                # Conditional means: what they average on their own breakout nights
                 "bo_mean_pts":  _cond_mean(pts_list, pts_list),
                 "bo_mean_ast":  _cond_mean(ast_list, pts_list),
                 "bo_mean_reb":  _cond_mean(reb_list, pts_list),
@@ -120,6 +154,49 @@ def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
                 "bo_mean_blk":  _cond_mean(blk_list, pts_list),
             }
         return result
+    except Exception:
+        return {}
+
+
+def _fetch_player_series_usage(player_ids: list[str], opp_abbr: str) -> dict[str, dict]:
+    """
+    Returns per-player stats in the current playoff series against opp_abbr.
+    Used to detect usage shifts mid-series (e.g. star taking over after teammate injury).
+
+    Keys per player_id: series_pts, series_ast, series_reb, series_games
+    Only returns players who appear in at least 1 series game.
+    """
+    if not player_ids or not _DB_PATH.exists():
+        return {}
+    try:
+        placeholders = ",".join("?" * len(player_ids))
+        conn = sqlite3.connect(str(_DB_PATH))
+        rows = conn.execute(
+            f"""
+            SELECT player_id,
+                   COUNT(DISTINCT game_id)  AS series_games,
+                   AVG(pts)                 AS series_pts,
+                   AVG(ast)                 AS series_ast,
+                   AVG(reb)                 AS series_reb
+            FROM player_game_logs
+            WHERE player_id IN ({placeholders})
+              AND opponent_abbreviation = ?
+              AND season_type = 'Playoffs'
+            GROUP BY player_id
+            HAVING COUNT(DISTINCT game_id) >= 1
+            """,
+            player_ids + [opp_abbr.upper()],
+        ).fetchall()
+        conn.close()
+        return {
+            r[0]: {
+                "series_games": int(r[1]),
+                "series_pts":   round(float(r[2]), 1),
+                "series_ast":   round(float(r[3]), 1),
+                "series_reb":   round(float(r[4]), 1),
+            }
+            for r in rows
+        }
     except Exception:
         return {}
 
@@ -967,11 +1044,31 @@ class ProjectionService:
         avg_min, play_prob = _fetch_player_game_data(all_active_ids)
         volatility = _fetch_player_volatility(all_active_ids)
 
+        # ── Feature 4: Minutes projection based on availability status ────────
+        # If a player is listed as questionable or doubtful, reduce their projected
+        # minutes and play probability accordingly. This prevents the model from
+        # projecting a full game from someone who may only play 20 min or not at all.
+        _status_adjustments = {
+            "probable":     (0.95, 0.95),   # (play_prob_mult, avg_min_mult)
+            "questionable": (0.65, 0.85),   # likely plays but limited
+            "doubtful":     (0.25, 0.75),   # unlikely to play full game
+        }
+        for p in home_player_projections + away_player_projections:
+            status_lower = (p.availability_status or "").lower()
+            if status_lower in _status_adjustments:
+                pp_mult, min_mult = _status_adjustments[status_lower]
+                pid = p.player_id
+                if pid in play_prob:
+                    play_prob[pid] = round(play_prob[pid] * pp_mult, 3)
+                if pid in avg_min:
+                    avg_min[pid] = round(avg_min[pid] * min_mult, 1)
+
         # Floor play probability at 0.85 for confirmed starters — they almost always play.
         starter_ids = {
             p.player_id
             for p in context.home_team.players + context.away_team.players
             if p.rotation_role == "starter"
+            and (p.availability_status or "").lower() not in _status_adjustments
         }
         for pid in starter_ids:
             if pid in play_prob:
@@ -1005,6 +1102,18 @@ class ProjectionService:
             # Fetch series-level team efficiency (pts, tov, reb, def) for both sides
             home_series_eff = _fetch_series_team_efficiency(home_tc, away_tc)
             away_series_eff = _fetch_series_team_efficiency(away_tc, home_tc)
+
+        # ── Feature 3: Per-player series usage (usage shift detection) ────────
+        # Fetch how each player is actually performing in THIS series vs this opponent.
+        # Used in _apply_volatility to detect stars taking over / usage shifts.
+        player_series_usage: dict[str, dict] = {}
+        if is_playoffs:
+            player_series_usage = _fetch_player_series_usage(all_active_ids, away_tc)
+            # Also fetch home-team players' series stats vs the away opponent
+            home_ids = [p.player_id for p in home_player_projections if p.availability_status != "dnp"]
+            away_ids = [p.player_id for p in away_player_projections if p.availability_status != "dnp"]
+            player_series_usage.update(_fetch_player_series_usage(home_ids, away_tc))
+            player_series_usage.update(_fetch_player_series_usage(away_ids, home_tc))
 
         # ── Series record & elimination/stakes context ──────────────────
         # Used to apply intensity boosts for must-win situations.
@@ -1448,6 +1557,35 @@ class ProjectionService:
             vol = volatility.get(proj.player_id, {})
             raw_breakout_pct = vol.get("breakout_pct", 0.0)
 
+            # ── Feature 1: Hot / Cold streak adjustment ───────────────────────
+            # Redistributes scoring within the team — doesn't change team total,
+            # just reflects that a hot player's SHARE of the team output is higher.
+            streak_factor = vol.get("streak_factor", 1.0)
+
+            # ── Feature 2: Personalised breakout threshold ────────────────────
+            # Each player's "breakout night" is defined relative to their own avg,
+            # not a one-size-fits-all 30-pt threshold.
+            personal_threshold = vol.get("breakout_threshold", _BREAKOUT_THRESHOLD)
+
+            # ── Feature 3: Series usage shift ────────────────────────────────
+            # If a player is scoring significantly more in this series than their
+            # season baseline, their usage has shifted — factor that into projection.
+            usage_shift_factor = 1.0
+            if is_playoffs:
+                series_data = player_series_usage.get(proj.player_id, {})
+                series_games = series_data.get("series_games", 0)
+                if series_games >= 2:
+                    series_pts = series_data.get("series_pts", 0.0)
+                    season_pts = vol.get("season_pts_per_game", 0.0)
+                    if season_pts > 0:
+                        shift = (series_pts - season_pts) / season_pts
+                        # Only boost/penalise if shift is meaningful (>10%)
+                        # Clamped: max +15% boost, max -12% penalty
+                        if shift > 0.10:
+                            usage_shift_factor = min(1.15, 1.0 + shift * 0.5)
+                        elif shift < -0.10:
+                            usage_shift_factor = max(0.88, 1.0 + shift * 0.5)
+
             # Opponent adjustment: weaker defense → higher breakout odds.
             # opp_factor > 1 when opp is worse than league avg, < 1 when elite.
             opp_factor = min(1.4, max(0.6, opp_def_rtg / _LEAGUE_AVG_DEF_RTG))
@@ -1485,30 +1623,62 @@ class ProjectionService:
 
             m = proj.projected_stats.mean
 
-            # Use actual conditional mean (avg stats on 30+ pt nights) when available.
-            # Floor at projected mean — breakout section should never show a lower
-            # number than the base projection (e.g. fewer 3PM because the 30-pt games
-            # came from driving/FT heavy nights rather than perimeter shooting).
+            # Apply streak factor + usage shift to base projected stats.
+            # Combined factor redistributes scoring within the team — hot players
+            # get a larger share, cold players get less. Team total unchanged.
+            combined_factor = round(streak_factor * usage_shift_factor, 3)
+            adj_pts = round(m.points  * combined_factor, 1)
+            adj_ast = round(m.assists * combined_factor, 1)
+            adj_reb = round(m.rebounds * combined_factor, 1)
+
+            # Use actual conditional mean (avg stats on their own breakout nights).
+            # Floor at adjusted mean — breakout section should never show lower.
             def _bo_mean(bo_key: str, mean_val: float, std_key: str) -> float:
                 v = vol.get(bo_key)
                 raw = v if v is not None else round(mean_val + vol.get(std_key, 2.0), 1)
                 return round(max(mean_val, raw), 1)
 
-            bo_pts  = _bo_mean("bo_mean_pts",  m.points,      "pts_std")
-            bo_ast  = _bo_mean("bo_mean_ast",  m.assists,     "ast_std")
-            bo_reb  = _bo_mean("bo_mean_reb",  m.rebounds,    "reb_std")
+            bo_pts  = _bo_mean("bo_mean_pts",  adj_pts,       "pts_std")
+            bo_ast  = _bo_mean("bo_mean_ast",  adj_ast,       "ast_std")
+            bo_reb  = _bo_mean("bo_mean_reb",  adj_reb,       "reb_std")
             bo_fg3m = _bo_mean("bo_mean_fg3m", m.threes_made, "fg3m_std")
             bo_stl  = _bo_mean("bo_mean_stl",  m.steals,      "stl_std")
             bo_blk  = _bo_mean("bo_mean_blk",  m.blocks,      "blk_std")
 
-            # ceiling_signal still uses pts + 2σ for probability calculation
-            pts_ceil_signal = m.points + 2.0 * vol.get("pts_std", 2.0)
-            ceiling_signal = min(0.5, max(0.0, (pts_ceil_signal - _BREAKOUT_THRESHOLD) / 20.0))
+            # ceiling_signal uses personalised threshold — superstars have a higher bar
+            pts_ceil_signal = adj_pts + 2.0 * vol.get("pts_std", 2.0)
+            ceiling_signal = min(0.5, max(0.0, (pts_ceil_signal - personal_threshold) / 20.0))
             raw_prob = adj_breakout_pct * 0.55 + ceiling_signal * 0.45
             breakout_prob = round(min(0.95, raw_prob * playoff_mult), 2)
-            breakout_alert = breakout_prob >= 0.20 or bo_pts >= _BREAKOUT_THRESHOLD
+            breakout_alert = breakout_prob >= 0.20 or bo_pts >= personal_threshold
+
+            # Rebuild projected_stats.mean with streak + usage adjustments applied.
+            # Floor / ceiling bands shift proportionally so the UI stays consistent.
+            updated_mean = m.model_copy(update={
+                "points":   adj_pts,
+                "assists":  adj_ast,
+                "rebounds": adj_reb,
+            })
+            floor_s = proj.projected_stats.floor
+            ceil_s  = proj.projected_stats.ceiling
+            updated_floor = floor_s.model_copy(update={
+                "points":   round(floor_s.points   * combined_factor, 1),
+                "assists":  round(floor_s.assists  * combined_factor, 1),
+                "rebounds": round(floor_s.rebounds * combined_factor, 1),
+            })
+            updated_ceil = ceil_s.model_copy(update={
+                "points":   round(ceil_s.points   * combined_factor, 1),
+                "assists":  round(ceil_s.assists  * combined_factor, 1),
+                "rebounds": round(ceil_s.rebounds * combined_factor, 1),
+            })
+            updated_stats = proj.projected_stats.model_copy(update={
+                "mean":    updated_mean,
+                "floor":   updated_floor,
+                "ceiling": updated_ceil,
+            })
 
             return proj.model_copy(update={
+                "projected_stats": updated_stats,
                 "breakout_stats": BreakoutStats(
                     mean_pts=bo_pts,
                     mean_ast=bo_ast,
