@@ -1738,18 +1738,34 @@ class ProjectionService:
 
         game_id = context.game_id
 
-        if status in ("live", "final"):
-            # Game is in progress or over — lock the score on first live snapshot
-            # so it never changes mid-game or on restart.
+        if status == "final":
+            # Game over — always use the locked score, nothing to update.
+            if game_id in _pregame_scores:
+                home_total, away_total = _pregame_scores[game_id]
+        elif status == "live":
+            # Game in progress — use locked score if we have one (from pre-game
+            # prediction), otherwise lock right now on first live call.
             if game_id not in _pregame_scores:
                 _pregame_scores[game_id] = [home_total, away_total]
                 _save_score_cache(_pregame_scores)
                 logger.info(
-                    "Locked live score for %s: %d-%d",
+                    "Locked live score for %s: %d-%d (first live call)",
                     game_id, home_total, away_total,
                 )
             home_total, away_total = _pregame_scores[game_id]
-        # Pre-game (status="scheduled"): predictions update freely on each poll.
+        else:
+            # Pre-game (status="scheduled"): lock on the very first prediction
+            # so the score shown in the morning is the same one frozen at tipoff.
+            # Subsequent scheduled calls return the locked value too — if the user
+            # wants a fresh prediction they can clear the cache manually.
+            if game_id not in _pregame_scores:
+                _pregame_scores[game_id] = [home_total, away_total]
+                _save_score_cache(_pregame_scores)
+                logger.info(
+                    "Locked pre-game score for %s: %d-%d (first prediction)",
+                    game_id, home_total, away_total,
+                )
+            home_total, away_total = _pregame_scores[game_id]
 
         # Tie-breaker: home teams win ~59% of NBA playoff games.
         if home_total == away_total:
