@@ -13,6 +13,7 @@ from app.simulation.state import GameContext
 
 _DB_PATH = Path(__file__).parent.parent.parent / "data" / "nba_training.db"
 _SCORE_CACHE_PATH = Path(__file__).parent.parent.parent / "data" / "score_cache.json"
+_OPENING_LINES_PATH = Path(__file__).parent.parent.parent / "data" / "opening_lines.json"
 _GAME_MINUTES = 240.0
 _LEAGUE_AVG_DEF_RTG = 114.0  # League-average defensive rating used for opp-adjustment
 _LEAGUE_AVG_TOV = 14.0       # League-average team turnovers per game
@@ -34,6 +35,22 @@ def _save_score_cache(cache: dict) -> None:
         pass
 
 _pregame_scores: dict[str, list[int]] = _load_score_cache()
+
+# Opening lines cache — stores the first Vegas implied total seen for each game.
+# Used to detect line movement between when a game is first predicted and now.
+def _load_opening_lines() -> dict:
+    try:
+        return json.loads(_OPENING_LINES_PATH.read_text()) if _OPENING_LINES_PATH.exists() else {}
+    except Exception:
+        return {}
+
+def _save_opening_lines(cache: dict) -> None:
+    try:
+        _OPENING_LINES_PATH.write_text(json.dumps(cache))
+    except Exception:
+        pass
+
+_opening_lines: dict = _load_opening_lines()
 
 
 def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
@@ -495,6 +512,151 @@ def _fetch_h2h_factor(team_abbr: str, opp_abbr: str) -> float:
 
         # Clamp to [-4, +4] — H2H is a modifier, not the whole story
         return round(max(-4.0, min(4.0, delta)), 1)
+
+    except Exception:
+        return 0.0
+
+
+def _detect_line_movement(
+    game_id: str,
+    home_vegas: float | None,
+    away_vegas: float | None,
+) -> tuple[float, float]:
+    """
+    Detects Vegas line movement since the opening for this game.
+
+    Logic:
+      - On first call for a game_id, store the current Vegas implied totals as
+        the "opening line" in a persistent JSON cache.
+      - On subsequent calls, compare the current line to the stored opening.
+      - Significant movement (3+ pts) suggests sharp money or breaking injury news.
+      - Apply 30% of the movement as a flat pts adjustment (clamped to ±2.5 pts).
+
+    Returns (home_movement_factor, away_movement_factor) in pts.
+
+    Examples:
+      OKC opened at 118, now at 112 → −1.8 pts adjustment (something moved the line down)
+      CLE opened at 102, now at 107 → +1.5 pts (market got more bullish on Cavs)
+    """
+    global _opening_lines
+
+    if home_vegas is None and away_vegas is None:
+        return 0.0, 0.0
+
+    key = str(game_id)
+    if key not in _opening_lines:
+        # First time we see this game — store as opening line
+        _opening_lines[key] = {
+            "home": home_vegas,
+            "away": away_vegas,
+        }
+        _save_opening_lines(_opening_lines)
+        return 0.0, 0.0
+
+    opening = _opening_lines[key]
+    home_move = 0.0
+    away_move = 0.0
+
+    if home_vegas is not None and opening.get("home") is not None:
+        delta = home_vegas - opening["home"]
+        if abs(delta) >= 3.0:
+            home_move = round(max(-2.5, min(2.5, delta * 0.30)), 1)
+
+    if away_vegas is not None and opening.get("away") is not None:
+        delta = away_vegas - opening["away"]
+        if abs(delta) >= 3.0:
+            away_move = round(max(-2.5, min(2.5, delta * 0.30)), 1)
+
+    return home_move, away_move
+
+
+def _detect_coach_adjustment(
+    team_abbr: str,
+    series_eff: dict | None,
+    series_deficit: int,
+    is_elimination: bool,
+) -> float:
+    """
+    Detects in-series coaching tactical adjustments and returns a flat pts modifier.
+
+    Logic:
+      - Compares team's 3PM rate and scoring in the current series vs their
+        regular season baseline from the training DB.
+      - If a LOSING team has significantly changed their shot profile (3PM up ≥ 1.0)
+        they've gone more aggressive → small scoring boost (+1.0 to +1.5 pts).
+      - If a LOSING team is scoring much less than RS baseline in the series,
+        the opponent's defensive adjustment is working → small extra penalty (-1.0 pts).
+      - Winning teams who are outperforming their RS avg → small extra confidence boost.
+      - Clamped to [-1.5, +1.5] so it's a refinement, not a driver.
+
+    Examples:
+      NYK in playoffs suddenly jacking 3s after losing 2 straight → +1.0
+      SAS scoring 12 fewer pts/game vs their RS avg while down 1-2 → −1.0
+    """
+    if not series_eff or not _DB_PATH.exists():
+        return 0.0
+
+    games_played = series_eff.get("games_played", 0)
+    if games_played < 2:
+        return 0.0  # Need at least 2 games of series evidence
+
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        ta = team_abbr.upper()
+
+        # Fetch team's regular season baseline (current + last season)
+        rs_row = conn.execute(
+            """
+            SELECT AVG(team_pts), AVG(team_fg3m)
+            FROM (
+                SELECT game_id,
+                       SUM(pts)  AS team_pts,
+                       SUM(fg3m) AS team_fg3m
+                FROM player_game_logs
+                WHERE team_abbreviation = ?
+                  AND season_type = 'Regular Season'
+                  AND season >= (SELECT MAX(season) FROM player_game_logs) - 1
+                GROUP BY game_id
+            )
+            """,
+            (ta,),
+        ).fetchone()
+        conn.close()
+
+        if not rs_row or not rs_row[0]:
+            return 0.0
+
+        rs_pts  = float(rs_row[0])
+        rs_fg3m = float(rs_row[1] or 0.0)
+
+        series_pts  = series_eff.get("pts_per_game", 0.0)
+        series_fg3m = series_eff.get("fg3m_per_game", 0.0)
+
+        is_losing = series_deficit > 0 or is_elimination
+        pts_delta  = series_pts - rs_pts
+        fg3m_delta = series_fg3m - rs_fg3m
+
+        adjustment = 0.0
+
+        if is_losing:
+            # Losing team pivoted to 3pt heavy game — desperation or real adjustment?
+            # Both are real signal: they're trying something different
+            if fg3m_delta >= 1.0:
+                # Coach opened up the 3pt game — offensive adaptation
+                adjustment += min(1.5, fg3m_delta * 0.5)
+
+            # Losing team scoring far below their RS average — opp defense working
+            if pts_delta <= -8.0:
+                adjustment -= 1.0
+            elif pts_delta <= -5.0:
+                adjustment -= 0.5
+        else:
+            # Winning team: if they're outperforming RS avg, defensive gameplan is working
+            if pts_delta >= 5.0:
+                adjustment += 0.5  # small continuation bonus
+
+        # Clamp hard — this is a refinement signal, not a primary driver
+        return round(max(-1.5, min(1.5, adjustment)), 1)
 
     except Exception:
         return 0.0
@@ -974,6 +1136,8 @@ class ProjectionService:
             road_fatigue: float = 0.0,
             motivation_factor: float = 0.0,
             h2h_factor: float = 0.0,
+            line_movement: float = 0.0,
+            coach_adjustment: float = 0.0,
         ) -> int:
             active = [p for p in projections if p.availability_status != "dnp"]
 
@@ -1053,8 +1217,8 @@ class ProjectionService:
                     blended = player_estimate * 0.50 + pace_est * 0.05 + vegas_implied * 0.45
                 else:
                     blended = player_estimate * 0.65 + pace_est * 0.35
-                # Regular season flat adjustments: road fatigue + motivation
-                flat_adj = flat + road_fatigue + motivation_factor + h2h_factor
+                # Regular season flat adjustments: road fatigue + motivation + line movement
+                flat_adj = flat + road_fatigue + motivation_factor + h2h_factor + line_movement
                 return round(blended + flat_adj)
 
             # ── Series team-level adjustments ──────────────────────────────
@@ -1177,7 +1341,7 @@ class ProjectionService:
                     # No series data → trust Vegas heavily (Game 1)
                     player_w, vegas_w, pace_w = 0.50, 0.45, 0.05
                 blended = player_estimate * player_w + pace_estimate * pace_w + vegas_implied * vegas_w
-                blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor
+                blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor + line_movement + coach_adjustment
                 return round(blended)
 
             # No Vegas:
@@ -1185,13 +1349,13 @@ class ProjectionService:
             # baked in at 60%+ weight. Adding pace on top dilutes that signal.
             # Trust the series-adjusted player estimate directly.
             if series_games >= 2:
-                return round(player_estimate + flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor)
+                return round(player_estimate + flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor + line_movement + coach_adjustment)
             elif series_games == 1:
                 blended = player_estimate * 0.75 + pace_estimate * 0.25
             else:
                 blended = player_estimate * 0.65 + pace_estimate * 0.35
 
-            blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor
+            blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor + line_movement + coach_adjustment
             return round(blended)
 
         logger.debug(
@@ -1199,6 +1363,26 @@ class ProjectionService:
             context.game_id,
             context.home_vegas_total,
             context.away_vegas_total,
+        )
+
+        # ── Line movement detection ──────────────────────────────────────────
+        # Compare current Vegas implied totals to the opening line for this game.
+        # Significant movement (3+ pts) suggests sharp money or injury news —
+        # apply 30% of the movement as a flat pts modifier (capped at ±2.5).
+        home_line_move, away_line_move = _detect_line_movement(
+            context.game_id,
+            context.home_vegas_total,
+            context.away_vegas_total,
+        )
+
+        # ── Coach adjustment detection ───────────────────────────────────────
+        # Compare team's in-series stats vs their regular season baseline.
+        # Losing teams changing shot profile or pace → coaching response detected.
+        home_coach_adj = _detect_coach_adjustment(
+            home_tc, home_series_eff, home_series_deficit, home_is_elimination
+        )
+        away_coach_adj = _detect_coach_adjustment(
+            away_tc, away_series_eff, away_series_deficit, away_is_elimination
         )
 
         home_total = _blended_team_total(
@@ -1222,6 +1406,8 @@ class ProjectionService:
             road_fatigue=home_ctx["road_fatigue"],
             motivation_factor=home_ctx["motivation_factor"],
             h2h_factor=_fetch_h2h_factor(home_tc, away_tc),
+            line_movement=home_line_move,
+            coach_adjustment=home_coach_adj,
         )
         away_total = _blended_team_total(
             away_player_projections,
@@ -1244,6 +1430,8 @@ class ProjectionService:
             road_fatigue=away_ctx["road_fatigue"],
             motivation_factor=away_ctx["motivation_factor"],
             h2h_factor=_fetch_h2h_factor(away_tc, home_tc),
+            line_movement=away_line_move,
+            coach_adjustment=away_coach_adj,
         )
 
         # ── Defensive intensity penalty ───────────────────────────────────────
