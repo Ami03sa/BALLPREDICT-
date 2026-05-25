@@ -434,6 +434,72 @@ def _fetch_team_home_away_factor(team_abbr: str) -> dict:
         return defaults
 
 
+def _fetch_h2h_factor(team_abbr: str, opp_abbr: str) -> float:
+    """
+    Returns a flat pts adjustment based on historical head-to-head performance
+    between these two teams over the last 3 seasons.
+
+    Logic:
+      - Pull all games where team_abbr played opp_abbr
+      - Calculate team's avg score vs opp vs team's overall season avg
+      - Delta = how much better/worse this team scores against this specific opponent
+      - Clamped to [-4, +4] pts so one outlier matchup can't dominate
+
+    Examples:
+      SAS historically holds OKC to fewer pts → OKC gets -2 vs SAS
+      NYK always scores well vs CLE → NYK gets +2 vs CLE
+    """
+    if not _DB_PATH.exists():
+        return 0.0
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        ta = team_abbr.upper()
+        oa = opp_abbr.upper()
+
+        # Get team's avg score specifically against this opponent (last 3 seasons)
+        h2h_rows = conn.execute(
+            """
+            SELECT game_id, SUM(pts) AS team_score
+            FROM player_game_logs
+            WHERE team_abbreviation = ?
+              AND matchup LIKE ?
+            GROUP BY game_id
+            ORDER BY MAX(game_date) DESC
+            LIMIT 20
+            """,
+            (ta, f"%{oa}%"),
+        ).fetchall()
+
+        # Get team's overall season avg for comparison baseline
+        season_avg_row = conn.execute(
+            """
+            SELECT AVG(team_score) FROM (
+                SELECT game_id, SUM(pts) AS team_score
+                FROM player_game_logs
+                WHERE team_abbreviation = ?
+                  AND season >= (SELECT MAX(season) FROM player_game_logs) - 2
+                GROUP BY game_id
+            )
+            """,
+            (ta,),
+        ).fetchone()
+
+        conn.close()
+
+        if not h2h_rows or not season_avg_row or not season_avg_row[0]:
+            return 0.0
+
+        h2h_avg = sum(r[1] for r in h2h_rows) / len(h2h_rows)
+        season_avg = float(season_avg_row[0])
+        delta = h2h_avg - season_avg
+
+        # Clamp to [-4, +4] — H2H is a modifier, not the whole story
+        return round(max(-4.0, min(4.0, delta)), 1)
+
+    except Exception:
+        return 0.0
+
+
 def _fetch_series_record(home_abbr: str, away_abbr: str) -> tuple[int, int]:
     """
     Returns (home_wins, away_wins) by comparing per-game scores in the playoff series.
@@ -907,6 +973,7 @@ class ProjectionService:
             rest_factor: float = 1.0,
             road_fatigue: float = 0.0,
             motivation_factor: float = 0.0,
+            h2h_factor: float = 0.0,
         ) -> int:
             active = [p for p in projections if p.availability_status != "dnp"]
 
@@ -940,11 +1007,13 @@ class ProjectionService:
 
             # ── Road trip fatigue ─────────────────────────────────────────────
             # Consecutive away games drain energy — penalty added flat after blend
-            # (kept separate so it compounds with rest factor correctly)
 
             # ── Motivation factor ─────────────────────────────────────────────
             # Teams fighting for seeding/survival score more; coasting teams less
-            # Applied as flat pts after blending (same as intensity_boost pattern)
+
+            # ── H2H matchup factor ────────────────────────────────────────────
+            # How this team historically scores vs THIS specific opponent
+            # Some teams just own certain matchups regardless of record
 
             # ── Playoff intensity boost (applied post-blend so Vegas can't dilute) ─
             # Elimination: season on the line → +3 pts (must-win effort)
@@ -985,7 +1054,7 @@ class ProjectionService:
                 else:
                     blended = player_estimate * 0.65 + pace_est * 0.35
                 # Regular season flat adjustments: road fatigue + motivation
-                flat_adj = flat + road_fatigue + motivation_factor
+                flat_adj = flat + road_fatigue + motivation_factor + h2h_factor
                 return round(blended + flat_adj)
 
             # ── Series team-level adjustments ──────────────────────────────
@@ -1108,7 +1177,7 @@ class ProjectionService:
                     # No series data → trust Vegas heavily (Game 1)
                     player_w, vegas_w, pace_w = 0.50, 0.45, 0.05
                 blended = player_estimate * player_w + pace_estimate * pace_w + vegas_implied * vegas_w
-                blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor
+                blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor
                 return round(blended)
 
             # No Vegas:
@@ -1116,13 +1185,13 @@ class ProjectionService:
             # baked in at 60%+ weight. Adding pace on top dilutes that signal.
             # Trust the series-adjusted player estimate directly.
             if series_games >= 2:
-                return round(player_estimate + flat_bonus + intensity_boost + road_fatigue + motivation_factor)
+                return round(player_estimate + flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor)
             elif series_games == 1:
                 blended = player_estimate * 0.75 + pace_estimate * 0.25
             else:
                 blended = player_estimate * 0.65 + pace_estimate * 0.35
 
-            blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor
+            blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor
             return round(blended)
 
         logger.debug(
@@ -1152,6 +1221,7 @@ class ProjectionService:
             rest_factor=home_ctx["rest_factor"],
             road_fatigue=home_ctx["road_fatigue"],
             motivation_factor=home_ctx["motivation_factor"],
+            h2h_factor=_fetch_h2h_factor(home_tc, away_tc),
         )
         away_total = _blended_team_total(
             away_player_projections,
@@ -1173,6 +1243,7 @@ class ProjectionService:
             rest_factor=away_ctx["rest_factor"],
             road_fatigue=away_ctx["road_fatigue"],
             motivation_factor=away_ctx["motivation_factor"],
+            h2h_factor=_fetch_h2h_factor(away_tc, home_tc),
         )
 
         # ── Defensive intensity penalty ───────────────────────────────────────
