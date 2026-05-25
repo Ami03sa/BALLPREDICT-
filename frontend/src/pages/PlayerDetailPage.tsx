@@ -107,7 +107,6 @@ export function PlayerDetailPage({
           />
         </div>
         <div className="flex flex-col items-center gap-3">
-          <p className="font-mono text-xs font-bold uppercase tracking-[0.5em] text-white/40">BALLTALK AI</p>
           <div className="flex items-center gap-2">
             <p className="font-mono text-sm font-bold uppercase tracking-[0.35em] text-white">Predicting Player Stats</p>
             <span className="flex gap-1">
