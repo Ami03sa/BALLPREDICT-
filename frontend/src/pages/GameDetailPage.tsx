@@ -294,6 +294,76 @@ function NBAScoreboard({
   );
 }
 
+function PredictingScreen({ label }: { label: string }) {
+  return (
+    <main className="min-h-screen bg-black flex flex-col items-center justify-center gap-8 px-4">
+      {/* Logo pulse */}
+      <div className="relative flex items-center justify-center">
+        {/* Outer ring — slow pulse */}
+        <div className="absolute h-32 w-32 rounded-full border border-white/10 animate-ping" style={{ animationDuration: "2s" }} />
+        {/* Middle ring — medium pulse */}
+        <div className="absolute h-24 w-24 rounded-full border border-white/20 animate-ping" style={{ animationDuration: "1.4s" }} />
+        {/* Logo */}
+        <img
+          src="/logo.png"
+          alt="BALLTALK"
+          className="relative h-16 w-16 object-contain"
+          style={{ animation: "logoBreath 2s ease-in-out infinite" }}
+        />
+      </div>
+
+      {/* Text */}
+      <div className="flex flex-col items-center gap-3">
+        <p className="font-mono text-xs font-bold uppercase tracking-[0.5em] text-white/40">
+          BALLTALK AI
+        </p>
+        <div className="flex items-center gap-2">
+          <p className="font-mono text-sm font-bold uppercase tracking-[0.35em] text-white">
+            {label}
+          </p>
+          {/* Animated dots */}
+          <span className="flex gap-1">
+            {[0, 1, 2].map((i) => (
+              <span
+                key={i}
+                className="h-1 w-1 rounded-full bg-white"
+                style={{
+                  animation: `dotBounce 1.2s ease-in-out infinite`,
+                  animationDelay: `${i * 0.2}s`,
+                }}
+              />
+            ))}
+          </span>
+        </div>
+        {/* Scanning bar */}
+        <div className="mt-2 h-px w-48 overflow-hidden bg-white/10">
+          <div
+            className="h-full bg-white"
+            style={{ animation: "scanBar 1.6s ease-in-out infinite" }}
+          />
+        </div>
+      </div>
+
+      {/* Inline keyframes */}
+      <style>{`
+        @keyframes logoBreath {
+          0%, 100% { opacity: 0.7; transform: scale(1); }
+          50% { opacity: 1; transform: scale(1.08); }
+        }
+        @keyframes dotBounce {
+          0%, 80%, 100% { opacity: 0.2; transform: translateY(0); }
+          40% { opacity: 1; transform: translateY(-4px); }
+        }
+        @keyframes scanBar {
+          0% { transform: translateX(-100%); width: 40%; }
+          50% { transform: translateX(150%); width: 60%; }
+          100% { transform: translateX(-100%); width: 40%; }
+        }
+      `}</style>
+    </main>
+  );
+}
+
 export function GameDetailPage({
   gameId,
   onBack,
@@ -338,15 +408,7 @@ export function GameDetailPage({
   }
 
   if (loading) {
-    return (
-      <main className="min-h-screen bg-black px-4 py-6 md:px-8">
-        <div className="mx-auto max-w-4xl">
-          <div className="border border-white/10 bg-black p-8 text-center">
-            <p className="font-mono text-xs uppercase tracking-[0.4em] text-white">Loading game...</p>
-          </div>
-        </div>
-      </main>
-    );
+    return <PredictingScreen label="Predicting Game" />;
   }
 
   if (error || !preview || !snapshot) {
