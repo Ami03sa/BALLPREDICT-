@@ -1,5 +1,5 @@
 import { useEffect, useState } from "react";
-import { fetchGamePreview, fetchSnapshot } from "../lib/api";
+import { fetchGamePreview, fetchSnapshot, resetPredictionCache } from "../lib/api";
 import type { GamePreview, PlayerProjection, Snapshot } from "../types";
 
 // Local logo map
@@ -307,32 +307,35 @@ export function GameDetailPage({
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
+  const [refreshing, setRefreshing] = useState(false);
+
+  async function loadGame(clearCache = false) {
+    setLoading(true);
+    setError(null);
+    try {
+      if (clearCache) await resetPredictionCache(gameId);
+      const [previewData, snapshotData] = await Promise.all([
+        fetchGamePreview(gameId),
+        fetchSnapshot(gameId),
+      ]);
+      setPreview(previewData);
+      setSnapshot(snapshotData);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to load game");
+    } finally {
+      setLoading(false);
+      setRefreshing(false);
+    }
+  }
 
   useEffect(() => {
-    let cancelled = false;
-
-    async function loadGame() {
-      setLoading(true);
-      setError(null);
-      try {
-        const [previewData, snapshotData] = await Promise.all([
-          fetchGamePreview(gameId),
-          fetchSnapshot(gameId),
-        ]);
-        if (!cancelled) {
-          setPreview(previewData);
-          setSnapshot(snapshotData);
-        }
-      } catch (err) {
-        if (!cancelled) setError(err instanceof Error ? err.message : "Failed to load game");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    }
-
     loadGame();
-    return () => { cancelled = true; };
   }, [gameId]);
+
+  async function handleRefresh() {
+    setRefreshing(true);
+    await loadGame(true);
+  }
 
   if (loading) {
     return (
@@ -375,13 +378,24 @@ export function GameDetailPage({
   return (
     <main className="min-h-screen bg-black px-4 py-6 md:px-8">
       <div className="mx-auto flex max-w-4xl flex-col gap-5">
-        <button
-          type="button"
-          onClick={onBack}
-          className="self-start border border-white/10 px-4 py-2 font-mono text-xs uppercase tracking-[0.4em] text-white transition hover:border-white/25"
-        >
-          ← Back
-        </button>
+        {/* Nav row: Back on left, Refresh Prediction on right */}
+        <div className="flex items-center justify-between">
+          <button
+            type="button"
+            onClick={onBack}
+            className="border border-white/10 px-4 py-2 font-mono text-xs uppercase tracking-[0.4em] text-white transition hover:border-white/25"
+          >
+            ← Back
+          </button>
+          <button
+            type="button"
+            onClick={handleRefresh}
+            disabled={refreshing}
+            className="border border-white/10 px-4 py-2 font-mono text-xs uppercase tracking-[0.4em] text-white transition hover:border-white/25 disabled:opacity-40"
+          >
+            {refreshing ? "Refreshing..." : "↺ Fresh Prediction"}
+          </button>
+        </div>
 
         <NBAScoreboard
           quarter={snapshot.quarter}

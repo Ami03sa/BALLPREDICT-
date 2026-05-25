@@ -2,6 +2,10 @@ import type { GamePreview, PlayerDetail, SlateGame, Snapshot } from "../types";
 
 const API_BASE = import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000/api/v1";
 
+export async function resetPredictionCache(gameId: string): Promise<void> {
+  await fetch(`${API_BASE}/games/${gameId}/prediction-cache`, { method: "DELETE" });
+}
+
 export async function fetchSlate(): Promise<SlateGame[]> {
   const response = await fetch(`${API_BASE}/games/slate`);
   if (!response.ok) throw new Error(`Slate fetch failed: ${response.status}`);
