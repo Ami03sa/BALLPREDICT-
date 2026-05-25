@@ -13,7 +13,6 @@ from app.simulation.state import GameContext
 
 _DB_PATH = Path(__file__).parent.parent.parent / "data" / "nba_training.db"
 _SCORE_CACHE_PATH = Path(__file__).parent.parent.parent / "data" / "score_cache.json"
-_OPENING_LINES_PATH = Path(__file__).parent.parent.parent / "data" / "opening_lines.json"
 _GAME_MINUTES = 240.0
 _LEAGUE_AVG_DEF_RTG = 114.0  # League-average defensive rating used for opp-adjustment
 _LEAGUE_AVG_TOV = 14.0       # League-average team turnovers per game
@@ -35,22 +34,6 @@ def _save_score_cache(cache: dict) -> None:
         pass
 
 _pregame_scores: dict[str, list[int]] = _load_score_cache()
-
-# Opening lines cache — stores the first Vegas implied total seen for each game.
-# Used to detect line movement between when a game is first predicted and now.
-def _load_opening_lines() -> dict:
-    try:
-        return json.loads(_OPENING_LINES_PATH.read_text()) if _OPENING_LINES_PATH.exists() else {}
-    except Exception:
-        return {}
-
-def _save_opening_lines(cache: dict) -> None:
-    try:
-        _OPENING_LINES_PATH.write_text(json.dumps(cache))
-    except Exception:
-        pass
-
-_opening_lines: dict = _load_opening_lines()
 
 
 def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
@@ -515,59 +498,6 @@ def _fetch_h2h_factor(team_abbr: str, opp_abbr: str) -> float:
 
     except Exception:
         return 0.0
-
-
-def _detect_line_movement(
-    game_id: str,
-    home_vegas: float | None,
-    away_vegas: float | None,
-) -> tuple[float, float]:
-    """
-    Detects Vegas line movement since the opening for this game.
-
-    Logic:
-      - On first call for a game_id, store the current Vegas implied totals as
-        the "opening line" in a persistent JSON cache.
-      - On subsequent calls, compare the current line to the stored opening.
-      - Significant movement (3+ pts) suggests sharp money or breaking injury news.
-      - Apply 30% of the movement as a flat pts adjustment (clamped to ±2.5 pts).
-
-    Returns (home_movement_factor, away_movement_factor) in pts.
-
-    Examples:
-      OKC opened at 118, now at 112 → −1.8 pts adjustment (something moved the line down)
-      CLE opened at 102, now at 107 → +1.5 pts (market got more bullish on Cavs)
-    """
-    global _opening_lines
-
-    if home_vegas is None and away_vegas is None:
-        return 0.0, 0.0
-
-    key = str(game_id)
-    if key not in _opening_lines:
-        # First time we see this game — store as opening line
-        _opening_lines[key] = {
-            "home": home_vegas,
-            "away": away_vegas,
-        }
-        _save_opening_lines(_opening_lines)
-        return 0.0, 0.0
-
-    opening = _opening_lines[key]
-    home_move = 0.0
-    away_move = 0.0
-
-    if home_vegas is not None and opening.get("home") is not None:
-        delta = home_vegas - opening["home"]
-        if abs(delta) >= 3.0:
-            home_move = round(max(-2.5, min(2.5, delta * 0.30)), 1)
-
-    if away_vegas is not None and opening.get("away") is not None:
-        delta = away_vegas - opening["away"]
-        if abs(delta) >= 3.0:
-            away_move = round(max(-2.5, min(2.5, delta * 0.30)), 1)
-
-    return home_move, away_move
 
 
 def _detect_coach_adjustment(
@@ -1136,7 +1066,6 @@ class ProjectionService:
             road_fatigue: float = 0.0,
             motivation_factor: float = 0.0,
             h2h_factor: float = 0.0,
-            line_movement: float = 0.0,
             coach_adjustment: float = 0.0,
         ) -> int:
             active = [p for p in projections if p.availability_status != "dnp"]
@@ -1217,8 +1146,8 @@ class ProjectionService:
                     blended = player_estimate * 0.50 + pace_est * 0.05 + vegas_implied * 0.45
                 else:
                     blended = player_estimate * 0.65 + pace_est * 0.35
-                # Regular season flat adjustments: road fatigue + motivation + line movement
-                flat_adj = flat + road_fatigue + motivation_factor + h2h_factor + line_movement
+                # Regular season flat adjustments: road fatigue + motivation + H2H
+                flat_adj = flat + road_fatigue + motivation_factor + h2h_factor
                 return round(blended + flat_adj)
 
             # ── Series team-level adjustments ──────────────────────────────
@@ -1341,7 +1270,7 @@ class ProjectionService:
                     # No series data → trust Vegas heavily (Game 1)
                     player_w, vegas_w, pace_w = 0.50, 0.45, 0.05
                 blended = player_estimate * player_w + pace_estimate * pace_w + vegas_implied * vegas_w
-                blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor + line_movement + coach_adjustment
+                blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor + coach_adjustment
                 return round(blended)
 
             # No Vegas:
@@ -1349,27 +1278,17 @@ class ProjectionService:
             # baked in at 60%+ weight. Adding pace on top dilutes that signal.
             # Trust the series-adjusted player estimate directly.
             if series_games >= 2:
-                return round(player_estimate + flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor + line_movement + coach_adjustment)
+                return round(player_estimate + flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor + coach_adjustment)
             elif series_games == 1:
                 blended = player_estimate * 0.75 + pace_estimate * 0.25
             else:
                 blended = player_estimate * 0.65 + pace_estimate * 0.35
 
-            blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor + line_movement + coach_adjustment
+            blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor + coach_adjustment
             return round(blended)
 
         logger.debug(
             "Score blend [%s]: home_vegas=%s away_vegas=%s",
-            context.game_id,
-            context.home_vegas_total,
-            context.away_vegas_total,
-        )
-
-        # ── Line movement detection ──────────────────────────────────────────
-        # Compare current Vegas implied totals to the opening line for this game.
-        # Significant movement (3+ pts) suggests sharp money or injury news —
-        # apply 30% of the movement as a flat pts modifier (capped at ±2.5).
-        home_line_move, away_line_move = _detect_line_movement(
             context.game_id,
             context.home_vegas_total,
             context.away_vegas_total,
@@ -1406,7 +1325,6 @@ class ProjectionService:
             road_fatigue=home_ctx["road_fatigue"],
             motivation_factor=home_ctx["motivation_factor"],
             h2h_factor=_fetch_h2h_factor(home_tc, away_tc),
-            line_movement=home_line_move,
             coach_adjustment=home_coach_adj,
         )
         away_total = _blended_team_total(
@@ -1430,7 +1348,6 @@ class ProjectionService:
             road_fatigue=away_ctx["road_fatigue"],
             motivation_factor=away_ctx["motivation_factor"],
             h2h_factor=_fetch_h2h_factor(away_tc, home_tc),
-            line_movement=away_line_move,
             coach_adjustment=away_coach_adj,
         )
 
