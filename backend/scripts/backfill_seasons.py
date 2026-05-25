@@ -39,12 +39,20 @@ _HEADERS = {
 _BASE = "https://stats.nba.com/stats"
 
 
-def _get(endpoint: str, params: dict, timeout: float = 30.0) -> dict:
-    time.sleep(1.0)  # polite delay
-    with httpx.Client(timeout=timeout, headers=_HEADERS, follow_redirects=True) as client:
-        r = client.get(f"{_BASE}/{endpoint}", params=params)
-        r.raise_for_status()
-        return r.json()
+def _get(endpoint: str, params: dict, timeout: float = 45.0, retries: int = 3) -> dict:
+    for attempt in range(retries):
+        try:
+            time.sleep(1.5 + attempt)  # polite delay, grows on retry
+            with httpx.Client(timeout=timeout, headers=_HEADERS, follow_redirects=True) as client:
+                r = client.get(f"{_BASE}/{endpoint}", params=params)
+                r.raise_for_status()
+                return r.json()
+        except Exception as e:
+            if attempt < retries - 1:
+                print(f"    ↻ Retry {attempt + 1}/{retries - 1} after error: {e}")
+                time.sleep(5)
+            else:
+                raise
 
 
 def _fetch_logs(season: str, season_type: str) -> list[dict]:
@@ -122,7 +130,6 @@ def _parse_row(r: dict, season: str, usg_map: dict) -> dict | None:
             "fg_pct":                float(r.get("FG_PCT", 0) or 0),
             "fg3_pct":               float(r.get("FG3_PCT", 0) or 0),
             "usg_pct":               usg,
-            "matchup":               matchup,
         }
     except Exception as e:
         print(f"    ✗ Row parse error: {e}")
@@ -137,11 +144,11 @@ def _insert_rows(conn: sqlite3.Connection, rows: list[dict]) -> int:
                 INSERT OR IGNORE INTO player_game_logs (
                     player_id, player_name, team_abbreviation, opponent_abbreviation,
                     game_id, game_date, season, season_type, home_away,
-                    min, pts, ast, reb, stl, blk, tov, fg3m, fg_pct, fg3_pct, usg_pct, matchup
+                    min, pts, ast, reb, stl, blk, tov, fg3m, fg_pct, fg3_pct, usg_pct
                 ) VALUES (
                     :player_id, :player_name, :team_abbreviation, :opponent_abbreviation,
                     :game_id, :game_date, :season, :season_type, :home_away,
-                    :min, :pts, :ast, :reb, :stl, :blk, :tov, :fg3m, :fg_pct, :fg3_pct, :usg_pct, :matchup
+                    :min, :pts, :ast, :reb, :stl, :blk, :tov, :fg3m, :fg_pct, :fg3_pct, :usg_pct
                 )
             """, row)
             inserted += conn.execute("SELECT changes()").fetchone()[0]
