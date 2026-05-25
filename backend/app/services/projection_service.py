@@ -191,11 +191,25 @@ def _fetch_player_game_data(player_ids: list[str]) -> tuple[dict[str, float], di
 def _fetch_team_context(team_abbreviation: str) -> dict:
     """
     Returns team-level context from the DB:
-      form_factor — last-5 avg score / season avg score (clamped 0.93–1.07)
-      is_b2b      — True if team played yesterday
-    Both are used to adjust the player estimate before blending.
+      form_factor     — last-5 avg score / season avg score (clamped 0.93–1.07)
+      is_b2b          — True if team played yesterday
+      days_rest       — days since last game (0 = B2B, 1 = one day rest, etc.)
+      rest_factor     — scoring multiplier based on days rest (0 days=-3%, 3+days=+1%)
+      road_trip_games — consecutive away games (fatigue builds after 3+)
+      road_fatigue    — penalty applied for extended road trips
+      motivation      — 0.0-1.0 score based on playoff race position
+      motivation_factor — pts adjustment based on motivation (max ±3 pts)
     """
-    result = {"form_factor": 1.0, "is_b2b": False}
+    result = {
+        "form_factor": 1.0,
+        "is_b2b": False,
+        "days_rest": 2,
+        "rest_factor": 1.0,
+        "road_trip_games": 0,
+        "road_fatigue": 0.0,
+        "motivation": 0.5,
+        "motivation_factor": 0.0,
+    }
     if not _DB_PATH.exists():
         return result
     try:
@@ -209,13 +223,13 @@ def _fetch_team_context(team_abbreviation: str) -> dict:
             # Recent 5 games: sum pts per game for this team
             recent = conn.execute(
                 """
-                SELECT game_id, SUM(pts) AS team_score, MAX(game_date) AS gdate
+                SELECT game_id, SUM(pts) AS team_score, MAX(game_date) AS gdate,
+                       MAX(matchup) AS matchup
                 FROM player_game_logs
                 WHERE team_abbreviation = ? AND season = ?
-                  AND season_type = 'Regular Season'
                 GROUP BY game_id
                 ORDER BY gdate DESC
-                LIMIT 5
+                LIMIT 10
                 """,
                 (team_abbreviation.upper(), season),
             ).fetchall()
@@ -235,15 +249,102 @@ def _fetch_team_context(team_abbreviation: str) -> dict:
             ).fetchone()
 
             if recent and season_avg_row and season_avg_row[0]:
-                recent_avg = sum(r[1] for r in recent) / len(recent)
+                recent5 = recent[:5]
+                recent_avg = sum(r[1] for r in recent5) / len(recent5)
                 season_avg = float(season_avg_row[0])
                 raw_factor = recent_avg / max(season_avg, 1)
                 result["form_factor"] = max(0.93, min(1.07, raw_factor))
 
-                # Back-to-back: did they play yesterday?
-                yesterday = (date.today() - timedelta(days=1)).isoformat()
+                # ── Rest days ─────────────────────────────────────────────────
+                today = date.today()
+                yesterday = (today - timedelta(days=1)).isoformat()
                 last_game_date = str(recent[0][2])[:10] if recent else ""
                 result["is_b2b"] = last_game_date == yesterday
+
+                if last_game_date:
+                    try:
+                        last_dt = date.fromisoformat(last_game_date)
+                        days_rest = (today - last_dt).days
+                        result["days_rest"] = days_rest
+                        # Rest factor: 0 days = -3%, 1 day = -1%, 2 days = 0%,
+                        # 3+ days = +1% (well rested but can be rusty above 5)
+                        if days_rest == 0:
+                            result["rest_factor"] = 0.97
+                        elif days_rest == 1:
+                            result["rest_factor"] = 0.99
+                        elif days_rest == 2:
+                            result["rest_factor"] = 1.0
+                        elif days_rest == 3:
+                            result["rest_factor"] = 1.01
+                        else:  # 4+ days — can get rusty
+                            result["rest_factor"] = 1.005
+                    except ValueError:
+                        pass
+
+                # ── Road trip fatigue ─────────────────────────────────────────
+                # Count consecutive away games (matchup contains "@" on road)
+                road_streak = 0
+                for row in recent:
+                    matchup = str(row[3] or "")
+                    # Away games have matchup like "LAL @ OKC" (team @ opponent)
+                    is_away = "@" in matchup and not matchup.startswith(team_abbreviation.upper())
+                    if is_away:
+                        road_streak += 1
+                    else:
+                        break  # home game breaks the streak
+
+                result["road_trip_games"] = road_streak
+                # Penalty kicks in after 3 consecutive road games
+                if road_streak >= 5:
+                    result["road_fatigue"] = -2.5   # brutal road trip
+                elif road_streak >= 3:
+                    result["road_fatigue"] = -1.5   # noticeable fatigue
+                elif road_streak == 2:
+                    result["road_fatigue"] = -0.5   # mild fatigue
+                else:
+                    result["road_fatigue"] = 0.0
+
+                # ── Motivation index ──────────────────────────────────────────
+                # Based on win rate in last 15 games vs season win rate.
+                # A team on a hot streak fighting for seeding = high motivation.
+                # A team already eliminated or locked in = low motivation.
+                recent15 = conn.execute(
+                    """
+                    SELECT game_id, SUM(pts) AS team_pts, MAX(game_date) AS gdate
+                    FROM player_game_logs
+                    WHERE team_abbreviation = ? AND season = ?
+                      AND season_type = 'Regular Season'
+                    GROUP BY game_id
+                    ORDER BY gdate DESC
+                    LIMIT 15
+                    """,
+                    (team_abbreviation.upper(), season),
+                ).fetchall()
+
+                season_games_row = conn.execute(
+                    """
+                    SELECT COUNT(DISTINCT game_id)
+                    FROM player_game_logs
+                    WHERE team_abbreviation = ? AND season = ?
+                      AND season_type = 'Regular Season'
+                    """,
+                    (team_abbreviation.upper(), season),
+                ).fetchone()
+
+                season_games = season_games_row[0] if season_games_row else 0
+
+                # Win rate in last 15 vs season — delta signals motivation
+                if len(recent15) >= 5 and season_games > 0:
+                    # Use scoring differential as a win proxy (no W/L in logs)
+                    recent_avg15 = sum(r[1] for r in recent15) / len(recent15)
+                    momentum_delta = (recent_avg15 - season_avg) / max(season_avg, 1)
+                    # Late season (>60 games played) amplifies motivation signal
+                    late_season_mult = 1.3 if season_games > 60 else 1.0
+                    raw_motivation = 0.5 + (momentum_delta * 2.0 * late_season_mult)
+                    motivation = max(0.1, min(0.9, raw_motivation))
+                    result["motivation"] = motivation
+                    # Convert to pts: range -3 to +3
+                    result["motivation_factor"] = round((motivation - 0.5) * 6.0, 1)
 
         conn.close()
     except Exception:
@@ -803,6 +904,9 @@ class ProjectionService:
             series_deficit: int = 0,
             is_elimination: bool = False,
             is_closeout: bool = False,
+            rest_factor: float = 1.0,
+            road_fatigue: float = 0.0,
+            motivation_factor: float = 0.0,
         ) -> int:
             active = [p for p in projections if p.availability_status != "dnp"]
 
@@ -828,6 +932,19 @@ class ProjectionService:
             # Back-to-back penalty: teams on B2B historically score ~3% less
             if is_b2b:
                 player_estimate *= 0.97
+
+            # ── Rest days factor ──────────────────────────────────────────────
+            # 0 days rest = -3%, 1 day = -1%, 2 days = baseline,
+            # 3 days = +1%, 4+ days = +0.5% (can get rusty)
+            player_estimate *= rest_factor
+
+            # ── Road trip fatigue ─────────────────────────────────────────────
+            # Consecutive away games drain energy — penalty added flat after blend
+            # (kept separate so it compounds with rest factor correctly)
+
+            # ── Motivation factor ─────────────────────────────────────────────
+            # Teams fighting for seeding/survival score more; coasting teams less
+            # Applied as flat pts after blending (same as intensity_boost pattern)
 
             # ── Playoff intensity boost (applied post-blend so Vegas can't dilute) ─
             # Elimination: season on the line → +3 pts (must-win effort)
@@ -867,7 +984,9 @@ class ProjectionService:
                     blended = player_estimate * 0.50 + pace_est * 0.05 + vegas_implied * 0.45
                 else:
                     blended = player_estimate * 0.65 + pace_est * 0.35
-                return round(blended + flat)  # no intensity_boost for regular season
+                # Regular season flat adjustments: road fatigue + motivation
+                flat_adj = flat + road_fatigue + motivation_factor
+                return round(blended + flat_adj)
 
             # ── Series team-level adjustments ──────────────────────────────
             # These capture team dynamics that individual player projections miss:
@@ -989,7 +1108,7 @@ class ProjectionService:
                     # No series data → trust Vegas heavily (Game 1)
                     player_w, vegas_w, pace_w = 0.50, 0.45, 0.05
                 blended = player_estimate * player_w + pace_estimate * pace_w + vegas_implied * vegas_w
-                blended += flat_bonus + intensity_boost
+                blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor
                 return round(blended)
 
             # No Vegas:
@@ -997,13 +1116,13 @@ class ProjectionService:
             # baked in at 60%+ weight. Adding pace on top dilutes that signal.
             # Trust the series-adjusted player estimate directly.
             if series_games >= 2:
-                return round(player_estimate + flat_bonus + intensity_boost)
+                return round(player_estimate + flat_bonus + intensity_boost + road_fatigue + motivation_factor)
             elif series_games == 1:
                 blended = player_estimate * 0.75 + pace_estimate * 0.25
             else:
                 blended = player_estimate * 0.65 + pace_estimate * 0.35
 
-            blended += flat_bonus + intensity_boost
+            blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor
             return round(blended)
 
         logger.debug(
@@ -1030,6 +1149,9 @@ class ProjectionService:
             series_deficit=home_series_deficit,
             is_elimination=home_is_elimination,
             is_closeout=home_is_closeout,
+            rest_factor=home_ctx["rest_factor"],
+            road_fatigue=home_ctx["road_fatigue"],
+            motivation_factor=home_ctx["motivation_factor"],
         )
         away_total = _blended_team_total(
             away_player_projections,
@@ -1048,6 +1170,9 @@ class ProjectionService:
             series_deficit=away_series_deficit,
             is_elimination=away_is_elimination,
             is_closeout=away_is_closeout,
+            rest_factor=away_ctx["rest_factor"],
+            road_fatigue=away_ctx["road_fatigue"],
+            motivation_factor=away_ctx["motivation_factor"],
         )
 
         # ── Defensive intensity penalty ───────────────────────────────────────
