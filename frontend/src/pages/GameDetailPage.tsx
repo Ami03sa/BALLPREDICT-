@@ -335,13 +335,6 @@ function PredictingScreen({ label }: { label: string }) {
             ))}
           </span>
         </div>
-        {/* Scanning bar */}
-        <div className="mt-2 h-px w-48 overflow-hidden bg-white/10">
-          <div
-            className="h-full bg-white"
-            style={{ animation: "scanBar 1.6s ease-in-out infinite" }}
-          />
-        </div>
       </div>
 
       {/* Inline keyframes */}
@@ -353,11 +346,6 @@ function PredictingScreen({ label }: { label: string }) {
         @keyframes dotBounce {
           0%, 80%, 100% { opacity: 0.2; transform: translateY(0); }
           40% { opacity: 1; transform: translateY(-4px); }
-        }
-        @keyframes scanBar {
-          0% { transform: translateX(-100%); width: 40%; }
-          50% { transform: translateX(150%); width: 60%; }
-          100% { transform: translateX(-100%); width: 40%; }
         }
       `}</style>
     </main>
