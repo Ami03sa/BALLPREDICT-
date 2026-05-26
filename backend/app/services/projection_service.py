@@ -1279,28 +1279,24 @@ class ProjectionService:
                 player_estimate -= tov_delta * 1.2
 
                 # (b) Blend player model with actual series scoring.
-                # Reduced cap from 0.65 → 0.45 so player model (which reflects real
-                # talent gap) isn't buried by series averages. Previously the 65% cap
-                # caused both teams to converge toward the same series average score,
-                # producing unrealistically tight 110-109 predictions every game.
-                series_scoring_weight = min(0.45, 0.20 * sg)
+                # Each game adds 30% trust in series reality — by game 2 we trust
+                # series data at 60%, fully overriding inflated season ratings.
+                series_scoring_weight = min(0.65, 0.30 * sg)
                 series_pts = series_eff["pts_per_game"]
                 player_estimate = (
                     player_estimate * (1 - series_scoring_weight)
                     + series_pts * series_scoring_weight
                 )
 
-                # (c) Series dominance adjustment — amplify the margin gap.
-                # Increased scale from 0.20 → 0.30 and cap from 6 → 10 pts.
-                # The old version was too conservative — a team dominating by 12 pts/game
-                # only got +2.4 pts bonus which barely moved the needle.
+                # (c) Series dominance adjustment — if this team is outscoring/being
+                # outscored vs the opponent in the series, amplify that gap.
                 pts_allowed = series_eff.get("pts_allowed_per_game")
                 if pts_allowed and pts_allowed > 0 and series_pts > 0:
                     series_margin = series_pts - pts_allowed
-                    # Scale: every 10pts of series margin → ~3pts boost/penalty
-                    dominance_bonus = series_margin * 0.30
-                    # Cap raised: let dominant teams show up as dominant
-                    dominance_bonus = max(-10.0, min(10.0, dominance_bonus))
+                    # Scale: every 10pts of series margin → ~2pts boost/penalty
+                    dominance_bonus = series_margin * 0.20
+                    # Cap to avoid overcorrecting from small sample
+                    dominance_bonus = max(-6.0, min(6.0, dominance_bonus))
                     player_estimate += dominance_bonus
 
             # ── Pace anchor (opponent-adjusted) ────────────────────────────
@@ -1378,9 +1374,8 @@ class ProjectionService:
                 # Vegas also has a known home-team bias in playoffs (crowds, narratives)
                 # that causes it to underestimate road dominance like OKC's 2025 run.
                 if series_games >= 3:
-                    # 3+ games: player model drives more, series reality baked in
-                    # via the series blend above — no need to double-count it here
-                    player_w, vegas_w, pace_w = 0.80, 0.15, 0.05
+                    # 3+ games: player model drives, Vegas still informative
+                    player_w, vegas_w, pace_w = 0.75, 0.20, 0.05
                 elif series_games == 2:
                     player_w, vegas_w, pace_w = 0.75, 0.20, 0.05
                 elif series_games == 1:
