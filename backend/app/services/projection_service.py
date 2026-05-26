@@ -1218,14 +1218,21 @@ class ProjectionService:
             # Some teams just own certain matchups regardless of record
 
             # ── Playoff intensity boost (applied post-blend so Vegas can't dilute) ─
-            # Elimination: season on the line → +3 pts (must-win effort)
-            # Down 2 games (very high stakes): +2 pts
-            # Down 1 game (must-win mentality): +1.5 pts
-            # Closeout attempt: +1 pt (focus / professionalism from the leading team)
+            # Elimination (1-3, 2-3): season on the line → team fights hard
+            # Down 2 games: desperate, need multiple wins to survive
+            # Down 1 game: must-win mentality
+            # Closeout attempt: closing team's professionalism/focus bonus
+            #
+            # SWEEP EXCEPTION (0-3): team is mentally broken — no fight left.
+            # Down 0-3 teams historically collapse (avg margin -18 pts in game 4).
+            # Apply a PENALTY instead of a boost — they've already checked out.
             intensity_boost = 0.0
             if is_playoffs:
-                if is_elimination:
-                    intensity_boost = 8.0   # backs fully against the wall — do or die
+                is_facing_sweep = is_elimination and series_deficit >= 3
+                if is_facing_sweep:
+                    intensity_boost = -4.0  # collapse penalty — mentally done, season over
+                elif is_elimination:
+                    intensity_boost = 8.0   # backs against wall but still in it (1-3 or 2-3)
                 elif series_deficit >= 2:
                     intensity_boost = 6.0   # desperate, need multiple wins to survive
                 elif series_deficit == 1:
@@ -1464,15 +1471,20 @@ class ProjectionService:
         # When a team is in must-win/elimination mode their defence spikes too.
         # The opponent scores fewer points because the desperate team locks in.
         # Penalty = 40% of the must-win team's intensity boost applied to opponent.
+        # SWEEP EXCEPTION: 0-3 teams have no defensive spike — they're cooked.
         if is_playoffs:
             home_intensity = 0.0
-            if home_is_elimination:    home_intensity = 8.0
+            if home_is_elimination and home_series_deficit >= 3:
+                home_intensity = 0.0   # swept — no defensive spike, they've quit
+            elif home_is_elimination:  home_intensity = 8.0
             elif home_series_deficit >= 2: home_intensity = 6.0
             elif home_series_deficit == 1: home_intensity = 4.0
             if home_is_closeout:       home_intensity += 2.5
 
             away_intensity = 0.0
-            if away_is_elimination:    away_intensity = 8.0
+            if away_is_elimination and away_series_deficit >= 3:
+                away_intensity = 0.0   # swept — no defensive spike, they've quit
+            elif away_is_elimination:  away_intensity = 8.0
             elif away_series_deficit >= 2: away_intensity = 6.0
             elif away_series_deficit == 1: away_intensity = 4.0
             if away_is_closeout:       away_intensity += 2.5
