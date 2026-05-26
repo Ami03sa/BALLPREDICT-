@@ -438,7 +438,7 @@ export function GameDetailPage({
           {preview.status === "final" ? (
             /* Final game — show locked label, no refresh */
             <span className="font-mono text-xs uppercase tracking-[0.4em] text-white/40">
-              🔒 Pre-game prediction
+              Pre-game prediction
             </span>
           ) : (
             /* Upcoming / live — allow fresh prediction */
