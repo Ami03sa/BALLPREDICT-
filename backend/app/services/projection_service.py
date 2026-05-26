@@ -182,6 +182,7 @@ def _fetch_player_series_usage(player_ids: list[str], opp_abbr: str) -> dict[str
             WHERE player_id IN ({placeholders})
               AND opponent_abbreviation = ?
               AND season_type = 'Playoffs'
+              AND season = (SELECT MAX(season) FROM player_game_logs)
             GROUP BY player_id
             HAVING COUNT(DISTINCT game_id) >= 1
             """,
@@ -1114,6 +1115,67 @@ class ProjectionService:
             away_ids = [p.player_id for p in away_player_projections if p.availability_status != "dnp"]
             player_series_usage.update(_fetch_player_series_usage(home_ids, away_tc))
             player_series_usage.update(_fetch_player_series_usage(away_ids, home_tc))
+
+        # ── Playoff series progressive blending ─────────────────────────
+        # As series games accumulate, the series data becomes more reliable
+        # than historical season data. We replace the XGBoost base projection
+        # with a blend that shifts progressively toward actual series averages:
+        #   Game 1 (0 series games): 100% historical
+        #   Game 2 (1 game played):  80% historical / 20% series
+        #   Game 3 (2 games):        60% historical / 40% series
+        #   Game 4 (3 games):        40% historical / 60% series
+        #   Game 5 (4 games):        20% historical / 80% series
+        #   Game 6+ (5+ games):      10% historical / 90% series
+        # This ensures individual player shares reflect WHO IS ACTUALLY
+        # producing in THIS matchup, not generic season averages.
+        if is_playoffs and player_series_usage:
+            def _apply_series_blend(proj_list: list) -> list:
+                blended_list = []
+                for p in proj_list:
+                    if p.availability_status == "dnp":
+                        blended_list.append(p)
+                        continue
+                    sd = player_series_usage.get(p.player_id, {})
+                    sg = sd.get("series_games", 0)
+                    if sg < 1:
+                        blended_list.append(p)
+                        continue
+                    series_w = min(0.90, sg * 0.20)   # 0.20 per game, cap at 0.90
+                    hist_w   = 1.0 - series_w
+                    m   = p.projected_stats.mean
+                    lo  = p.projected_stats.low
+                    hi  = p.projected_stats.high
+                    s_pts = sd.get("series_pts", m.points)
+                    s_ast = sd.get("series_ast", m.assists)
+                    s_reb = sd.get("series_reb", m.rebounds)
+                    new_pts = round(hist_w * m.points   + series_w * s_pts, 1)
+                    new_ast = round(hist_w * m.assists  + series_w * s_ast, 1)
+                    new_reb = round(hist_w * m.rebounds + series_w * s_reb, 1)
+                    # Scale low/high bands by the same ratio so ceiling > median > floor
+                    pts_ratio = new_pts / m.points if m.points > 0 else 1.0
+                    ast_ratio = new_ast / m.assists if m.assists > 0 else 1.0
+                    reb_ratio = new_reb / m.rebounds if m.rebounds > 0 else 1.0
+                    updated_mean = m.model_copy(update={"points": new_pts, "assists": new_ast, "rebounds": new_reb})
+                    updated_low  = lo.model_copy(update={
+                        "points":   round(lo.points   * pts_ratio, 1),
+                        "assists":  round(lo.assists   * ast_ratio, 1),
+                        "rebounds": round(lo.rebounds  * reb_ratio, 1),
+                    })
+                    updated_high = hi.model_copy(update={
+                        "points":   round(hi.points   * pts_ratio, 1),
+                        "assists":  round(hi.assists   * ast_ratio, 1),
+                        "rebounds": round(hi.rebounds  * reb_ratio, 1),
+                    })
+                    updated_band = p.projected_stats.model_copy(update={
+                        "mean": updated_mean,
+                        "low":  updated_low,
+                        "high": updated_high,
+                    })
+                    blended_list.append(p.model_copy(update={"projected_stats": updated_band}))
+                return blended_list
+
+            home_player_projections = _apply_series_blend(home_player_projections)
+            away_player_projections = _apply_series_blend(away_player_projections)
 
         # ── Series record & elimination/stakes context ──────────────────
         # Used to apply intensity boosts for must-win situations.
