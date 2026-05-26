@@ -425,7 +425,7 @@ export function GameDetailPage({
   return (
     <main className="min-h-screen bg-black px-4 py-6 md:px-8">
       <div className="mx-auto flex max-w-4xl flex-col gap-5">
-        {/* Nav row: Back on left, Refresh Prediction on right */}
+        {/* Nav row: Back on left, action on right */}
         <div className="flex items-center justify-between">
           <button
             type="button"
@@ -434,14 +434,23 @@ export function GameDetailPage({
           >
             ← Back
           </button>
-          <button
-            type="button"
-            onClick={handleRefresh}
-            disabled={refreshing}
-            className="border border-white/10 px-4 py-2 font-mono text-xs uppercase tracking-[0.4em] text-white transition hover:border-white/25 disabled:opacity-40"
-          >
-            {refreshing ? "Refreshing..." : "↺ Fresh Prediction"}
-          </button>
+
+          {preview.status === "final" ? (
+            /* Final game — show locked label, no refresh */
+            <span className="font-mono text-xs uppercase tracking-[0.4em] text-white/40">
+              🔒 Pre-game prediction
+            </span>
+          ) : (
+            /* Upcoming / live — allow fresh prediction */
+            <button
+              type="button"
+              onClick={handleRefresh}
+              disabled={refreshing}
+              className="border border-white/10 px-4 py-2 font-mono text-xs uppercase tracking-[0.4em] text-white transition hover:border-white/25 disabled:opacity-40"
+            >
+              {refreshing ? "Refreshing..." : "↺ Fresh Prediction"}
+            </button>
+          )}
         </div>
 
         <NBAScoreboard
