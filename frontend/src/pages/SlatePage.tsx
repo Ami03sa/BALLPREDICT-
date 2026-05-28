@@ -42,73 +42,96 @@ function SlateCard({
   game: SlateGame;
   onOpen: (gameId: string) => void;
 }) {
+  const isUpcoming = (game.daysUntil ?? 0) > 0 || game.status === "upcoming";
+
   return (
-    <button
-      type="button"
-      onClick={() => onOpen(game.gameId)}
-      className="border border-white/10 bg-black p-5 text-left transition hover:border-white/25 hover:bg-neutral-950"
-    >
-      {/* Team logos row */}
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-4">
-          <div className="flex flex-col items-center gap-1">
-            <TeamLogoImg teamId={game.awayAbbreviation} abbr={game.awayAbbreviation} size={48} />
-            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white">
-              {game.awayAbbreviation}
-            </span>
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => !isUpcoming && onOpen(game.gameId)}
+        disabled={isUpcoming}
+        className={[
+          "w-full border p-5 text-left transition",
+          isUpcoming
+            ? "border-white/5 bg-black/60 cursor-not-allowed opacity-60"
+            : "border-white/10 bg-black hover:border-white/25 hover:bg-neutral-950",
+        ].join(" ")}
+      >
+        {/* Team logos row */}
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-4">
+            <div className="flex flex-col items-center gap-1">
+              <TeamLogoImg teamId={game.awayAbbreviation} abbr={game.awayAbbreviation} size={48} />
+              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white">
+                {game.awayAbbreviation}
+              </span>
+            </div>
+            <span className="font-mono text-xs text-white">@</span>
+            <div className="flex flex-col items-center gap-1">
+              <TeamLogoImg teamId={game.homeAbbreviation} abbr={game.homeAbbreviation} size={48} />
+              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white">
+                {game.homeAbbreviation}
+              </span>
+            </div>
           </div>
-          <span className="font-mono text-xs text-white">@</span>
-          <div className="flex flex-col items-center gap-1">
-            <TeamLogoImg teamId={game.homeAbbreviation} abbr={game.homeAbbreviation} size={48} />
-            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white">
-              {game.homeAbbreviation}
+          <div className="flex flex-col items-end gap-1">
+            <span className="border border-white/20 px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.4em] text-white">
+              {isUpcoming ? (game.gameDate ?? "upcoming") : game.status}
             </span>
+            {isUpcoming && (
+              <span className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/40">
+                {game.tipoff}
+              </span>
+            )}
           </div>
         </div>
-        <span className="border border-white/20 px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.4em] text-white">
-          {game.status}
-        </span>
-      </div>
 
-      {/* Matchup heading */}
-      <h2 className="font-mono text-xl font-bold italic text-white leading-tight">
-        {game.awayTeam} <span className="text-white">at</span> {game.homeTeam}
-      </h2>
-      <p className="mt-2 text-xs leading-5 text-white">{game.headline}</p>
+        {/* Matchup heading */}
+        <h2 className="font-mono text-xl font-bold italic text-white leading-tight">
+          {game.awayTeam} <span className="text-white">at</span> {game.homeTeam}
+        </h2>
+        <p className="mt-2 text-xs leading-5 text-white">{game.headline}</p>
 
-      {/* Tipoff / Broadcast */}
-      <div className="mt-4 grid grid-cols-2 gap-3 text-xs border-t border-white/20 pt-4">
-        <div>
-          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">Tipoff</p>
-          <p className="mt-1 font-mono font-bold text-white">{game.tipoff}</p>
+        {/* Tipoff / Broadcast */}
+        <div className="mt-4 grid grid-cols-2 gap-3 text-xs border-t border-white/20 pt-4">
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">Tipoff</p>
+            <p className="mt-1 font-mono font-bold text-white">{game.tipoff}</p>
+          </div>
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">Broadcast</p>
+            <p className="mt-1 font-mono font-bold text-white">{game.broadcast || "—"}</p>
+          </div>
         </div>
-        <div>
-          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">Broadcast</p>
-          <p className="mt-1 font-mono font-bold text-white">{game.broadcast}</p>
-        </div>
-      </div>
 
-      {/* Records */}
-      <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
-        <div>
-          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">{game.awayAbbreviation} Record</p>
-          <p className="mt-1 font-mono font-bold text-white">{game.awayRecord}</p>
+        {/* Records */}
+        <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">{game.awayAbbreviation} Record</p>
+            <p className="mt-1 font-mono font-bold text-white">{game.awayRecord || "—"}</p>
+          </div>
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">{game.homeAbbreviation} Record</p>
+            <p className="mt-1 font-mono font-bold text-white">{game.homeRecord || "—"}</p>
+          </div>
         </div>
-        <div>
-          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">{game.homeAbbreviation} Record</p>
-          <p className="mt-1 font-mono font-bold text-white">{game.homeRecord}</p>
+
+        <p className="mt-4 text-xs text-white/60">{game.predictionHook}</p>
+
+        {/* CTA */}
+        <div className="mt-5 border-t border-white/20 pt-4">
+          {isUpcoming ? (
+            <p className="font-mono text-[10px] font-bold uppercase tracking-[0.5em] text-white/30">
+              🔒 Prediction Unlocks Game Day
+            </p>
+          ) : (
+            <p className="font-mono text-[10px] font-bold uppercase tracking-[0.5em] text-white">
+              Open Analysis →
+            </p>
+          )}
         </div>
-      </div>
-
-      <p className="mt-4 text-xs text-white">{game.predictionHook}</p>
-
-      {/* CTA */}
-      <div className="mt-5 border-t border-white/20 pt-4">
-        <p className="font-mono text-[10px] font-bold uppercase tracking-[0.5em] text-white">
-          Open Analysis →
-        </p>
-      </div>
-    </button>
+      </button>
+    </div>
   );
 }
 
@@ -121,6 +144,9 @@ export function SlatePage({
   slateError?: string | null;
   onOpenGame: (gameId: string) => void;
 }) {
+  const liveGames = games.filter((g) => (g.daysUntil ?? 0) === 0 && g.status !== "upcoming");
+  const upcomingGames = games.filter((g) => (g.daysUntil ?? 0) > 0 || g.status === "upcoming");
+
   return (
     <main className="min-h-screen bg-black px-4 py-6 md:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
@@ -140,17 +166,26 @@ export function SlatePage({
                 </h1>
               </div>
               <p className="font-mono text-[10px] uppercase tracking-[0.6em] text-white mb-1">
-                AI Prediction Model · Today&apos;s NBA Slate
+                AI Prediction Model · NBA Slate
               </p>
               <div className="h-px w-32 bg-white/30 mb-4" />
               <p className="max-w-2xl text-xs leading-6 text-white">
                 Click any matchup for AI-projected scores, player stat predictions, series momentum analysis, and coaching adjustments.
               </p>
             </div>
-            <div className="border border-white/10 px-6 py-5">
-              <p className="font-mono text-[9px] uppercase tracking-[0.5em] text-white">Scheduled Today</p>
-              <p className="mt-2 font-mono text-4xl font-bold text-white">{games.length}</p>
-              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.4em] text-white">Games Ready</p>
+            <div className="flex gap-4">
+              <div className="border border-white/10 px-6 py-5">
+                <p className="font-mono text-[9px] uppercase tracking-[0.5em] text-white">Today</p>
+                <p className="mt-2 font-mono text-4xl font-bold text-white">{liveGames.length}</p>
+                <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.4em] text-white">Games Live</p>
+              </div>
+              {upcomingGames.length > 0 && (
+                <div className="border border-white/5 px-6 py-5 opacity-60">
+                  <p className="font-mono text-[9px] uppercase tracking-[0.5em] text-white">Upcoming</p>
+                  <p className="mt-2 font-mono text-4xl font-bold text-white">{upcomingGames.length}</p>
+                  <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.4em] text-white">Scheduled</p>
+                </div>
+              )}
             </div>
           </div>
         </section>

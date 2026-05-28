@@ -108,23 +108,88 @@ class LiveGameService:
             ]
 
     async def list_slate_games(self) -> list[dict]:
+        from datetime import date, timedelta
+        import httpx
+
+        results: list[dict] = []
+
+        # ── Today's games from NBA CDN ──────────────────────────────────
         try:
             scoreboard = await nba_live_client.fetch_scoreboard()
-            games = scoreboard.get("scoreboard", {}).get("games", [])
-            return [self._build_live_slate_row(game) for game in games]
+            today_games = scoreboard.get("scoreboard", {}).get("games", [])
+            for g in today_games:
+                results.append(self._build_live_slate_row(g))
         except Exception:
-            games = []
             for game_id, slate_row in self._slate.items():
-                context = self._contexts.get(game_id)
-                if context is None:
-                    continue
-                games.append(
-                    {
-                        **slate_row,
-                        "prediction_hook": self._build_prediction_hook(context),
-                    }
-                )
-            return games
+                if self._contexts.get(game_id):
+                    results.append({**slate_row, "prediction_hook": self._build_prediction_hook(self._contexts[game_id])})
+
+        today_ids = {r["game_id"] for r in results}
+
+        # ── Upcoming games (next 2 days) from ESPN ──────────────────────
+        # Show scheduled future games on the slate so users can see what's coming,
+        # but they are locked (days_until > 0) so prediction can't be opened yet.
+        try:
+            async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
+                for delta in range(1, 3):
+                    future_date = (date.today() + timedelta(days=delta)).strftime("%Y%m%d")
+                    r = await client.get(
+                        "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
+                        params={"dates": future_date},
+                    )
+                    if r.status_code != 200:
+                        continue
+                    for event in r.json().get("events", []):
+                        comps = event.get("competitions", [{}])[0]
+                        competitors = comps.get("competitors", [])
+                        away_c = next((t for t in competitors if t["homeAway"] == "away"), {})
+                        home_c = next((t for t in competitors if t["homeAway"] == "home"), {})
+                        home_abbr = home_c.get("team", {}).get("abbreviation", "")
+                        away_abbr = away_c.get("team", {}).get("abbreviation", "")
+                        # Normalise ESPN "SA" → "SAS"
+                        if home_abbr == "SA": home_abbr = "SAS"
+                        if away_abbr == "SA": away_abbr = "SAS"
+                        home_name = home_c.get("team", {}).get("displayName", home_abbr)
+                        away_name = away_c.get("team", {}).get("displayName", away_abbr)
+                        espn_id = event.get("id", "")
+                        # Build a stable game_id we can reuse (prefixed so it's clear it's upcoming)
+                        fake_game_id = f"upcoming_{espn_id}"
+                        if fake_game_id in today_ids:
+                            continue
+                        game_date_str = event.get("date", "")
+                        # Format tipoff for display
+                        try:
+                            from datetime import datetime, timezone
+                            dt = datetime.fromisoformat(game_date_str.replace("Z", "+00:00"))
+                            # Convert to ET (UTC-4 during EDT)
+                            dt_et = dt.replace(tzinfo=timezone.utc) - timedelta(hours=4)
+                            tipoff_str = dt_et.strftime("%-I:%M %p ET")
+                            game_date_display = dt_et.strftime("%a %b %-d")
+                        except Exception:
+                            tipoff_str = "TBD"
+                            game_date_display = f"+{delta}d"
+
+                        results.append({
+                            "game_id": fake_game_id,
+                            "status": "upcoming",
+                            "tipoff": tipoff_str,
+                            "game_date": game_date_display,
+                            "days_until": delta,
+                            "broadcast": comps.get("broadcasts", [{}])[0].get("names", [""])[0] if comps.get("broadcasts") else "",
+                            "arena": comps.get("venue", {}).get("fullName", ""),
+                            "headline": f"{away_name} at {home_name}",
+                            "home_team": home_name,
+                            "away_team": away_name,
+                            "home_abbreviation": home_abbr,
+                            "away_abbreviation": away_abbr,
+                            "home_record": home_c.get("records", [{}])[0].get("summary", ""),
+                            "away_record": away_c.get("records", [{}])[0].get("summary", ""),
+                            "prediction_hook": f"Prediction unlocks on game day ({game_date_display})",
+                        })
+        except Exception as exc:
+            logger.debug("Upcoming games fetch failed: %s", exc)
+
+        return results
 
     async def get_game_preview(self, game_id: str) -> dict:
         context, scoreboard_game = await self._resolve_context(game_id)

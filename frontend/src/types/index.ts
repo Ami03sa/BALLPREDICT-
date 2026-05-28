@@ -87,6 +87,8 @@ export type SlateGame = {
   gameId: string;
   status: string;
   tipoff: string;
+  gameDate?: string | null;
+  daysUntil?: number;
   broadcast: string;
   arena: string;
   headline: string;

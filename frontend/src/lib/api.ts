@@ -14,6 +14,8 @@ export async function fetchSlate(): Promise<SlateGame[]> {
     gameId: game.game_id,
     status: game.status,
     tipoff: game.tipoff,
+    gameDate: game.game_date ?? null,
+    daysUntil: game.days_until ?? 0,
     broadcast: game.broadcast,
     arena: game.arena,
     headline: game.headline,
