@@ -26,10 +26,27 @@ function App() {
   const [games, setGames] = useState<SlateGame[]>([]);
   const [slateError, setSlateError] = useState<string | null>(null);
 
-  useEffect(() => {
+  const loadSlate = () => {
     fetchSlate()
       .then((data) => { setGames(data); setSlateError(null); })
       .catch((err: Error) => setSlateError(err.message));
+  };
+
+  // Initial load
+  useEffect(() => { loadSlate(); }, []);
+
+  // Refresh at midnight so today's slate flips automatically
+  useEffect(() => {
+    const now = new Date();
+    const midnight = new Date(now);
+    midnight.setHours(24, 0, 10, 0); // 00:00:10 next day (10s buffer)
+    const msUntilMidnight = midnight.getTime() - now.getTime();
+
+    const t = setTimeout(() => {
+      loadSlate();
+    }, msUntilMidnight);
+
+    return () => clearTimeout(t);
   }, []);
 
   useEffect(() => {

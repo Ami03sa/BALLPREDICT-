@@ -1,4 +1,3 @@
-import { useState, useRef } from "react";
 import type { SlateGame } from "../types";
 
 const TEAM_LOGO_MAP: Record<string, string> = {
@@ -19,7 +18,9 @@ function teamLogoPath(teamId: string): string {
 
 function TeamLogoImg({ teamId, abbr, size = 48 }: { teamId: string; abbr: string; size?: number }) {
   const path = teamLogoPath(teamId);
-  if (!path) return <span className="font-mono text-base font-bold text-white">{abbr}</span>;
+  if (!path) {
+    return <span className="font-mono text-base font-bold text-white">{abbr}</span>;
+  }
   return (
     <img
       src={path}
@@ -33,229 +34,75 @@ function TeamLogoImg({ teamId, abbr, size = 48 }: { teamId: string; abbr: string
 }
 
 function SlateCard({ game, onOpen }: { game: SlateGame; onOpen: (gameId: string) => void }) {
-  const isUpcoming = (game.daysUntil ?? 0) > 0 || game.status === "upcoming";
-
   return (
-    <button
-      type="button"
-      onClick={() => !isUpcoming && onOpen(game.gameId)}
-      disabled={isUpcoming}
-      className={[
-        "w-full border p-5 text-left transition",
-        isUpcoming
-          ? "border-white/5 bg-black/60 cursor-not-allowed opacity-60"
-          : "border-white/10 bg-black hover:border-white/25 hover:bg-neutral-950",
-      ].join(" ")}
-    >
-      {/* Team logos row */}
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <div className="flex items-center gap-4">
-          <div className="flex flex-col items-center gap-1">
-            <TeamLogoImg teamId={game.awayAbbreviation} abbr={game.awayAbbreviation} size={48} />
-            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white">
-              {game.awayAbbreviation}
+    <div className="relative">
+      <button
+        type="button"
+        onClick={() => onOpen(game.gameId)}
+        className="w-full border border-white/10 bg-black p-5 text-left transition hover:border-white/25 hover:bg-neutral-950"
+      >
+        {/* Team logos row */}
+        <div className="mb-4 flex items-center justify-between gap-3">
+          <div className="flex items-center gap-4">
+            <div className="flex flex-col items-center gap-1">
+              <TeamLogoImg teamId={game.awayAbbreviation} abbr={game.awayAbbreviation} size={48} />
+              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white">
+                {game.awayAbbreviation}
+              </span>
+            </div>
+            <span className="font-mono text-xs text-white">@</span>
+            <div className="flex flex-col items-center gap-1">
+              <TeamLogoImg teamId={game.homeAbbreviation} abbr={game.homeAbbreviation} size={48} />
+              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white">
+                {game.homeAbbreviation}
+              </span>
+            </div>
+          </div>
+          <div className="flex flex-col items-end gap-1">
+            <span className="border border-white/20 px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.4em] text-white">
+              {game.status}
             </span>
           </div>
-          <span className="font-mono text-xs text-white">@</span>
-          <div className="flex flex-col items-center gap-1">
-            <TeamLogoImg teamId={game.homeAbbreviation} abbr={game.homeAbbreviation} size={48} />
-            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white">
-              {game.homeAbbreviation}
-            </span>
+        </div>
+
+        <h2 className="font-mono text-xl font-bold italic text-white leading-tight">
+          {game.awayTeam} <span className="text-white">at</span> {game.homeTeam}
+        </h2>
+        <p className="mt-2 text-xs leading-5 text-white">{game.headline}</p>
+
+        <div className="mt-4 grid grid-cols-2 gap-3 text-xs border-t border-white/20 pt-4">
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">Tipoff</p>
+            <p className="mt-1 font-mono font-bold text-white">{game.tipoff}</p>
+          </div>
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">Broadcast</p>
+            <p className="mt-1 font-mono font-bold text-white">{game.broadcast || "—"}</p>
           </div>
         </div>
-        <div className="flex flex-col items-end gap-1">
-          <span className="border border-white/20 px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.4em] text-white">
-            {isUpcoming ? (game.gameDate ?? "upcoming") : game.status}
-          </span>
-          {isUpcoming && (
-            <span className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/40">
-              {game.tipoff}
-            </span>
-          )}
-        </div>
-      </div>
 
-      <h2 className="font-mono text-xl font-bold italic text-white leading-tight">
-        {game.awayTeam} <span className="text-white">at</span> {game.homeTeam}
-      </h2>
-      <p className="mt-2 text-xs leading-5 text-white">{game.headline}</p>
-
-      <div className="mt-4 grid grid-cols-2 gap-3 text-xs border-t border-white/20 pt-4">
-        <div>
-          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">Tipoff</p>
-          <p className="mt-1 font-mono font-bold text-white">{game.tipoff}</p>
+        <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">{game.awayAbbreviation} Record</p>
+            <p className="mt-1 font-mono font-bold text-white">{game.awayRecord || "—"}</p>
+          </div>
+          <div>
+            <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">{game.homeAbbreviation} Record</p>
+            <p className="mt-1 font-mono font-bold text-white">{game.homeRecord || "—"}</p>
+          </div>
         </div>
-        <div>
-          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">Broadcast</p>
-          <p className="mt-1 font-mono font-bold text-white">{game.broadcast || "—"}</p>
-        </div>
-      </div>
 
-      <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
-        <div>
-          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">{game.awayAbbreviation} Record</p>
-          <p className="mt-1 font-mono font-bold text-white">{game.awayRecord || "—"}</p>
-        </div>
-        <div>
-          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">{game.homeAbbreviation} Record</p>
-          <p className="mt-1 font-mono font-bold text-white">{game.homeRecord || "—"}</p>
-        </div>
-      </div>
+        <p className="mt-4 text-xs text-white/60">{game.predictionHook}</p>
 
-      <p className="mt-4 text-xs text-white/60">{game.predictionHook}</p>
-
-      <div className="mt-5 border-t border-white/20 pt-4">
-        {isUpcoming ? (
-          <p className="font-mono text-[10px] font-bold uppercase tracking-[0.5em] text-white/30">
-            🔒 Prediction Unlocks Game Day
-          </p>
-        ) : (
+        <div className="mt-5 border-t border-white/20 pt-4">
           <p className="font-mono text-[10px] font-bold uppercase tracking-[0.5em] text-white">
             Open Analysis →
           </p>
-        )}
-      </div>
-    </button>
-  );
-}
-
-// ── Carousel ────────────────────────────────────────────────────────────────
-
-function GameCarousel({ games, onOpen }: { games: SlateGame[]; onOpen: (id: string) => void }) {
-  const [index, setIndex] = useState(0);
-  const [dir, setDir] = useState<"left" | "right" | null>(null);
-  const [animating, setAnimating] = useState(false);
-
-  // touch tracking
-  const touchStartX = useRef<number | null>(null);
-
-  const go = (next: number, direction: "left" | "right") => {
-    if (animating || next === index) return;
-    setDir(direction);
-    setAnimating(true);
-    setTimeout(() => {
-      setIndex(next);
-      setAnimating(false);
-      setDir(null);
-    }, 220);
-  };
-
-  const prev = () => { if (index > 0) go(index - 1, "right"); };
-  const next = () => { if (index < games.length - 1) go(index + 1, "left"); };
-
-  const handleTouchStart = (e: React.TouchEvent) => {
-    touchStartX.current = e.touches[0].clientX;
-  };
-  const handleTouchEnd = (e: React.TouchEvent) => {
-    if (touchStartX.current === null) return;
-    const diff = e.changedTouches[0].clientX - touchStartX.current;
-    touchStartX.current = null;
-    if (diff < -40) next();
-    else if (diff > 40) prev();
-  };
-
-  if (games.length === 0) {
-    return (
-      <p className="py-16 text-center font-mono text-xs uppercase tracking-[0.4em] text-white/30">
-        No games scheduled.
-      </p>
-    );
-  }
-
-  const slideStyle: React.CSSProperties = animating
-    ? {
-        opacity: 0,
-        transform: dir === "left" ? "translateX(-32px)" : "translateX(32px)",
-        transition: "opacity 0.22s ease, transform 0.22s ease",
-      }
-    : {
-        opacity: 1,
-        transform: "translateX(0)",
-        transition: "opacity 0.22s ease, transform 0.22s ease",
-      };
-
-  return (
-    <div className="flex flex-col gap-4">
-      {/* Arrow row + card */}
-      <div className="flex items-center gap-3">
-
-        {/* Left arrow */}
-        <button
-          type="button"
-          onClick={prev}
-          disabled={index === 0}
-          className={[
-            "flex-shrink-0 flex items-center justify-center w-10 h-10 border transition",
-            index === 0
-              ? "border-white/5 text-white/15 cursor-not-allowed"
-              : "border-white/20 text-white hover:bg-white hover:text-black",
-          ].join(" ")}
-          aria-label="Previous game"
-        >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M10 3L5 8L10 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-
-        {/* Card (animated) */}
-        <div
-          className="flex-1 min-w-0"
-          style={slideStyle}
-          onTouchStart={handleTouchStart}
-          onTouchEnd={handleTouchEnd}
-        >
-          <SlateCard game={games[index]} onOpen={onOpen} />
         </div>
-
-        {/* Right arrow */}
-        <button
-          type="button"
-          onClick={next}
-          disabled={index === games.length - 1}
-          className={[
-            "flex-shrink-0 flex items-center justify-center w-10 h-10 border transition",
-            index === games.length - 1
-              ? "border-white/5 text-white/15 cursor-not-allowed"
-              : "border-white/20 text-white hover:bg-white hover:text-black",
-          ].join(" ")}
-          aria-label="Next game"
-        >
-          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-            <path d="M6 3L11 8L6 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
-          </svg>
-        </button>
-      </div>
-
-      {/* Dot indicators */}
-      {games.length > 1 && (
-        <div className="flex items-center justify-center gap-2">
-          {games.map((g, i) => (
-            <button
-              key={g.gameId}
-              type="button"
-              onClick={() => go(i, i > index ? "left" : "right")}
-              className={[
-                "transition-all rounded-full",
-                i === index
-                  ? "w-4 h-1.5 bg-white"
-                  : "w-1.5 h-1.5 bg-white/25 hover:bg-white/50",
-              ].join(" ")}
-              aria-label={`Go to game ${i + 1}`}
-            />
-          ))}
-        </div>
-      )}
-
-      {/* Counter */}
-      <p className="text-center font-mono text-[9px] uppercase tracking-[0.5em] text-white/30">
-        {index + 1} / {games.length}
-      </p>
+      </button>
     </div>
   );
 }
-
-// ── Main Page ────────────────────────────────────────────────────────────────
 
 export function SlatePage({
   games,
@@ -266,6 +113,9 @@ export function SlatePage({
   slateError?: string | null;
   onOpenGame: (gameId: string) => void;
 }) {
+  // Only show today's games — upcoming future games are hidden until their day arrives
+  const todayGames = games.filter((g) => (g.daysUntil ?? 0) === 0 && g.status !== "upcoming");
+
   return (
     <main className="min-h-screen bg-black px-4 py-6 md:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
@@ -281,7 +131,7 @@ export function SlatePage({
                 </h1>
               </div>
               <p className="font-mono text-[10px] uppercase tracking-[0.6em] text-white mb-1">
-                AI Prediction Model · NBA Slate
+                AI Prediction Model · Today&apos;s NBA Slate
               </p>
               <div className="h-px w-32 bg-white/30 mb-4" />
               <p className="max-w-2xl text-xs leading-6 text-white">
@@ -289,8 +139,8 @@ export function SlatePage({
               </p>
             </div>
             <div className="border border-white/10 px-6 py-5">
-              <p className="font-mono text-[9px] uppercase tracking-[0.5em] text-white">On The Slate</p>
-              <p className="mt-2 font-mono text-4xl font-bold text-white">{games.length}</p>
+              <p className="font-mono text-[9px] uppercase tracking-[0.5em] text-white">Scheduled Today</p>
+              <p className="mt-2 font-mono text-4xl font-bold text-white">{todayGames.length}</p>
               <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.4em] text-white">Games</p>
             </div>
           </div>
@@ -302,9 +152,16 @@ export function SlatePage({
           </section>
         )}
 
-        {/* Carousel */}
-        <GameCarousel games={games} onOpen={onOpenGame} />
-
+        <section className="grid gap-4 xl:grid-cols-3">
+          {todayGames.map((game) => (
+            <SlateCard key={game.gameId} game={game} onOpen={onOpenGame} />
+          ))}
+          {!slateError && todayGames.length === 0 && (
+            <p className="col-span-3 py-12 text-center font-mono text-xs uppercase tracking-[0.4em] text-white/40">
+              No games scheduled today.
+            </p>
+          )}
+        </section>
       </div>
     </main>
   );
