@@ -125,11 +125,23 @@ def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
             # ── Personalised breakout threshold ───────────────────────────
             # Fixed 30-pt threshold is wrong for bench players and wrong for
             # superstars. Use 125% of weighted mean, floored at 25 pts.
-            # Examples:
-            #   Wemby (avg 27 pts) → threshold = 34 pts
-            #   Mitchell (avg 26 pts) → threshold = 33 pts
-            #   Bench player (avg 10 pts) → threshold = 25 pts (floor)
             personal_breakout_threshold = max(25.0, round(weighted_mean * 1.25))
+
+            # ── Bounce-back signal ────────────────────────────────────────
+            # Elite players who scored significantly below their mean last game
+            # historically respond with elevated output. This is a real pattern:
+            # pride, film study, adjustments — stars don't go quiet two games in a row.
+            # last game (rn=1) vs weighted mean:
+            #   < -20% below mean → strong bounce-back signal (+35% breakout boost)
+            #   < -12% below mean → mild bounce-back signal  (+20% breakout boost)
+            last_game_pts = pts_list[0] if pts_list else weighted_mean
+            bounce_back_mult = 1.0
+            if weighted_mean > 0:
+                last_game_pct = (last_game_pts - weighted_mean) / weighted_mean
+                if last_game_pct <= -0.20:
+                    bounce_back_mult = 1.35   # strongly below average → big bounce-back likely
+                elif last_game_pct <= -0.12:
+                    bounce_back_mult = 1.20   # mildly below average → moderate bounce-back
 
             result[pid] = {
                 "pts_std":          round(_std(pts_list), 1),
@@ -145,6 +157,7 @@ def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
                 "season_pts_per_game":      round(season_mean, 1),
                 "streak_factor":            round(streak_factor, 3),
                 "breakout_threshold":       personal_breakout_threshold,
+                "bounce_back_mult":         round(bounce_back_mult, 3),
                 # Conditional means: what they average on their own breakout nights
                 "bo_mean_pts":  _cond_mean(pts_list, pts_list),
                 "bo_mean_ast":  _cond_mean(ast_list, pts_list),
@@ -1662,6 +1675,12 @@ class ProjectionService:
             # opp_factor > 1 when opp is worse than league avg, < 1 when elite.
             opp_factor = min(1.4, max(0.6, opp_def_rtg / _LEAGUE_AVG_DEF_RTG))
             adj_breakout_pct = min(1.0, raw_breakout_pct * opp_factor)
+
+            # ── Bounce-back signal ────────────────────────────────────────
+            # Elite players who went well below their average last game respond.
+            # Stars don't go quiet two games in a row — pride + film study.
+            bounce_back_mult = vol.get("bounce_back_mult", 1.0)
+            adj_breakout_pct = min(1.0, adj_breakout_pct * bounce_back_mult)
 
             # Elimination / high-stakes star boost: top players on must-win teams
             # elevate their breakout probability — stars rise to the moment.
