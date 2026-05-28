@@ -19,9 +19,7 @@ function teamLogoPath(teamId: string): string {
 
 function TeamLogoImg({ teamId, abbr, size = 48 }: { teamId: string; abbr: string; size?: number }) {
   const path = teamLogoPath(teamId);
-  if (!path) {
-    return <span className="font-mono text-base font-bold text-white">{abbr}</span>;
-  }
+  if (!path) return <span className="font-mono text-base font-bold text-white">{abbr}</span>;
   return (
     <img
       src={path}
@@ -38,244 +36,226 @@ function SlateCard({ game, onOpen }: { game: SlateGame; onOpen: (gameId: string)
   const isUpcoming = (game.daysUntil ?? 0) > 0 || game.status === "upcoming";
 
   return (
-    <div className="relative">
-      <button
-        type="button"
-        onClick={() => !isUpcoming && onOpen(game.gameId)}
-        disabled={isUpcoming}
-        className={[
-          "w-full border p-5 text-left transition",
-          isUpcoming
-            ? "border-white/5 bg-black/60 cursor-not-allowed opacity-60"
-            : "border-white/10 bg-black hover:border-white/25 hover:bg-neutral-950",
-        ].join(" ")}
-      >
-        {/* Team logos row */}
-        <div className="mb-4 flex items-center justify-between gap-3">
-          <div className="flex items-center gap-4">
-            <div className="flex flex-col items-center gap-1">
-              <TeamLogoImg teamId={game.awayAbbreviation} abbr={game.awayAbbreviation} size={48} />
-              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white">
-                {game.awayAbbreviation}
-              </span>
-            </div>
-            <span className="font-mono text-xs text-white">@</span>
-            <div className="flex flex-col items-center gap-1">
-              <TeamLogoImg teamId={game.homeAbbreviation} abbr={game.homeAbbreviation} size={48} />
-              <span className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white">
-                {game.homeAbbreviation}
-              </span>
-            </div>
-          </div>
-          <div className="flex flex-col items-end gap-1">
-            <span className="border border-white/20 px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.4em] text-white">
-              {isUpcoming ? (game.gameDate ?? "upcoming") : game.status}
+    <button
+      type="button"
+      onClick={() => !isUpcoming && onOpen(game.gameId)}
+      disabled={isUpcoming}
+      className={[
+        "w-full border p-5 text-left transition",
+        isUpcoming
+          ? "border-white/5 bg-black/60 cursor-not-allowed opacity-60"
+          : "border-white/10 bg-black hover:border-white/25 hover:bg-neutral-950",
+      ].join(" ")}
+    >
+      {/* Team logos row */}
+      <div className="mb-4 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-4">
+          <div className="flex flex-col items-center gap-1">
+            <TeamLogoImg teamId={game.awayAbbreviation} abbr={game.awayAbbreviation} size={48} />
+            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white">
+              {game.awayAbbreviation}
             </span>
-            {isUpcoming && (
-              <span className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/40">
-                {game.tipoff}
-              </span>
-            )}
+          </div>
+          <span className="font-mono text-xs text-white">@</span>
+          <div className="flex flex-col items-center gap-1">
+            <TeamLogoImg teamId={game.homeAbbreviation} abbr={game.homeAbbreviation} size={48} />
+            <span className="font-mono text-[10px] font-bold uppercase tracking-[0.3em] text-white">
+              {game.homeAbbreviation}
+            </span>
           </div>
         </div>
-
-        {/* Matchup heading */}
-        <h2 className="font-mono text-xl font-bold italic text-white leading-tight">
-          {game.awayTeam} <span className="text-white">at</span> {game.homeTeam}
-        </h2>
-        <p className="mt-2 text-xs leading-5 text-white">{game.headline}</p>
-
-        {/* Tipoff / Broadcast */}
-        <div className="mt-4 grid grid-cols-2 gap-3 text-xs border-t border-white/20 pt-4">
-          <div>
-            <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">Tipoff</p>
-            <p className="mt-1 font-mono font-bold text-white">{game.tipoff}</p>
-          </div>
-          <div>
-            <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">Broadcast</p>
-            <p className="mt-1 font-mono font-bold text-white">{game.broadcast || "—"}</p>
-          </div>
-        </div>
-
-        {/* Records */}
-        <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
-          <div>
-            <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">{game.awayAbbreviation} Record</p>
-            <p className="mt-1 font-mono font-bold text-white">{game.awayRecord || "—"}</p>
-          </div>
-          <div>
-            <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">{game.homeAbbreviation} Record</p>
-            <p className="mt-1 font-mono font-bold text-white">{game.homeRecord || "—"}</p>
-          </div>
-        </div>
-
-        <p className="mt-4 text-xs text-white/60">{game.predictionHook}</p>
-
-        {/* CTA */}
-        <div className="mt-5 border-t border-white/20 pt-4">
-          {isUpcoming ? (
-            <p className="font-mono text-[10px] font-bold uppercase tracking-[0.5em] text-white/30">
-              🔒 Prediction Unlocks Game Day
-            </p>
-          ) : (
-            <p className="font-mono text-[10px] font-bold uppercase tracking-[0.5em] text-white">
-              Open Analysis →
-            </p>
+        <div className="flex flex-col items-end gap-1">
+          <span className="border border-white/20 px-2 py-0.5 font-mono text-[9px] font-bold uppercase tracking-[0.4em] text-white">
+            {isUpcoming ? (game.gameDate ?? "upcoming") : game.status}
+          </span>
+          {isUpcoming && (
+            <span className="font-mono text-[9px] uppercase tracking-[0.3em] text-white/40">
+              {game.tipoff}
+            </span>
           )}
         </div>
-      </button>
-    </div>
+      </div>
+
+      <h2 className="font-mono text-xl font-bold italic text-white leading-tight">
+        {game.awayTeam} <span className="text-white">at</span> {game.homeTeam}
+      </h2>
+      <p className="mt-2 text-xs leading-5 text-white">{game.headline}</p>
+
+      <div className="mt-4 grid grid-cols-2 gap-3 text-xs border-t border-white/20 pt-4">
+        <div>
+          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">Tipoff</p>
+          <p className="mt-1 font-mono font-bold text-white">{game.tipoff}</p>
+        </div>
+        <div>
+          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">Broadcast</p>
+          <p className="mt-1 font-mono font-bold text-white">{game.broadcast || "—"}</p>
+        </div>
+      </div>
+
+      <div className="mt-3 grid grid-cols-2 gap-3 text-xs">
+        <div>
+          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">{game.awayAbbreviation} Record</p>
+          <p className="mt-1 font-mono font-bold text-white">{game.awayRecord || "—"}</p>
+        </div>
+        <div>
+          <p className="font-mono text-[9px] uppercase tracking-[0.4em] text-white">{game.homeAbbreviation} Record</p>
+          <p className="mt-1 font-mono font-bold text-white">{game.homeRecord || "—"}</p>
+        </div>
+      </div>
+
+      <p className="mt-4 text-xs text-white/60">{game.predictionHook}</p>
+
+      <div className="mt-5 border-t border-white/20 pt-4">
+        {isUpcoming ? (
+          <p className="font-mono text-[10px] font-bold uppercase tracking-[0.5em] text-white/30">
+            🔒 Prediction Unlocks Game Day
+          </p>
+        ) : (
+          <p className="font-mono text-[10px] font-bold uppercase tracking-[0.5em] text-white">
+            Open Analysis →
+          </p>
+        )}
+      </div>
+    </button>
   );
 }
 
-// ── Date tab helpers ────────────────────────────────────────────────────────
+// ── Carousel ────────────────────────────────────────────────────────────────
 
-function todayLabel(): string {
-  return new Date().toLocaleDateString("en-US", { weekday: "short", month: "short", day: "numeric" });
-}
+function GameCarousel({ games, onOpen }: { games: SlateGame[]; onOpen: (id: string) => void }) {
+  const [index, setIndex] = useState(0);
+  const [dir, setDir] = useState<"left" | "right" | null>(null);
+  const [animating, setAnimating] = useState(false);
 
-type DateBucket = {
-  daysUntil: number;
-  label: string;      // e.g. "Wed May 28"
-  sublabel: string;   // "Today" | "Tomorrow" | ""
-  games: SlateGame[];
-  locked: boolean;
-};
+  // touch tracking
+  const touchStartX = useRef<number | null>(null);
 
-function buildBuckets(games: SlateGame[]): DateBucket[] {
-  // Group by daysUntil (0, 1, 2 …)
-  const map = new Map<number, SlateGame[]>();
-  for (const g of games) {
-    const d = g.daysUntil ?? 0;
-    if (!map.has(d)) map.set(d, []);
-    map.get(d)!.push(g);
+  const go = (next: number, direction: "left" | "right") => {
+    if (animating || next === index) return;
+    setDir(direction);
+    setAnimating(true);
+    setTimeout(() => {
+      setIndex(next);
+      setAnimating(false);
+      setDir(null);
+    }, 220);
+  };
+
+  const prev = () => { if (index > 0) go(index - 1, "right"); };
+  const next = () => { if (index < games.length - 1) go(index + 1, "left"); };
+
+  const handleTouchStart = (e: React.TouchEvent) => {
+    touchStartX.current = e.touches[0].clientX;
+  };
+  const handleTouchEnd = (e: React.TouchEvent) => {
+    if (touchStartX.current === null) return;
+    const diff = e.changedTouches[0].clientX - touchStartX.current;
+    touchStartX.current = null;
+    if (diff < -40) next();
+    else if (diff > 40) prev();
+  };
+
+  if (games.length === 0) {
+    return (
+      <p className="py-16 text-center font-mono text-xs uppercase tracking-[0.4em] text-white/30">
+        No games scheduled.
+      </p>
+    );
   }
 
-  // Sort keys ascending
-  const sorted = [...map.keys()].sort((a, b) => a - b);
-
-  return sorted.map((d) => {
-    const dayGames = map.get(d)!;
-    // For the label use gameDate from any upcoming game, or build from today
-    let label = "";
-    if (d === 0) {
-      label = todayLabel();
-    } else {
-      // Try to get it from the first game's gameDate
-      const gd = dayGames[0]?.gameDate;
-      label = gd ?? `+${d}d`;
-    }
-    return {
-      daysUntil: d,
-      label,
-      sublabel: d === 0 ? "Today" : d === 1 ? "Tomorrow" : "",
-      games: dayGames,
-      locked: d > 0,
-    };
-  });
-}
-
-// ── Date Slider ─────────────────────────────────────────────────────────────
-
-function DateSlider({
-  buckets,
-  selected,
-  onSelect,
-}: {
-  buckets: DateBucket[];
-  selected: number;
-  onSelect: (daysUntil: number) => void;
-}) {
-  const stripRef = useRef<HTMLDivElement>(null);
-
-  // Touch/mouse swipe state
-  const dragStart = useRef<number | null>(null);
-
-  const handlePointerDown = (e: React.PointerEvent) => {
-    dragStart.current = e.clientX;
-  };
-
-  const handlePointerUp = (e: React.PointerEvent) => {
-    if (dragStart.current === null) return;
-    const diff = e.clientX - dragStart.current;
-    dragStart.current = null;
-
-    if (Math.abs(diff) < 30) return; // treat as click, not swipe
-
-    const currentIdx = buckets.findIndex((b) => b.daysUntil === selected);
-    if (diff < 0 && currentIdx < buckets.length - 1) {
-      onSelect(buckets[currentIdx + 1].daysUntil);
-    } else if (diff > 0 && currentIdx > 0) {
-      onSelect(buckets[currentIdx - 1].daysUntil);
-    }
-  };
-
-  if (buckets.length <= 1) return null;
+  const slideStyle: React.CSSProperties = animating
+    ? {
+        opacity: 0,
+        transform: dir === "left" ? "translateX(-32px)" : "translateX(32px)",
+        transition: "opacity 0.22s ease, transform 0.22s ease",
+      }
+    : {
+        opacity: 1,
+        transform: "translateX(0)",
+        transition: "opacity 0.22s ease, transform 0.22s ease",
+      };
 
   return (
-    <div
-      ref={stripRef}
-      className="flex items-stretch gap-0 overflow-x-auto border border-white/10 select-none"
-      style={{ scrollbarWidth: "none" }}
-      onPointerDown={handlePointerDown}
-      onPointerUp={handlePointerUp}
-    >
-      {buckets.map((bucket, i) => {
-        const isActive = bucket.daysUntil === selected;
-        return (
-          <button
-            key={bucket.daysUntil}
-            type="button"
-            onClick={() => onSelect(bucket.daysUntil)}
-            className={[
-              "relative flex flex-col items-center justify-center px-8 py-4 transition-all flex-1 min-w-[120px]",
-              isActive
-                ? "bg-white text-black"
-                : bucket.locked
-                ? "bg-black text-white/40 hover:text-white/60"
-                : "bg-black text-white hover:bg-white/5",
-              i < buckets.length - 1 ? "border-r border-white/10" : "",
-            ].join(" ")}
-          >
-            {/* Lock icon for future dates */}
-            {bucket.locked && (
-              <span className={["font-mono text-[8px] mb-1", isActive ? "text-black/50" : "text-white/30"].join(" ")}>
-                🔒
-              </span>
-            )}
+    <div className="flex flex-col gap-4">
+      {/* Arrow row + card */}
+      <div className="flex items-center gap-3">
 
-            {/* Day label */}
-            <span className={["font-mono text-[10px] font-bold uppercase tracking-[0.35em]", isActive ? "text-black" : ""].join(" ")}>
-              {bucket.label}
-            </span>
+        {/* Left arrow */}
+        <button
+          type="button"
+          onClick={prev}
+          disabled={index === 0}
+          className={[
+            "flex-shrink-0 flex items-center justify-center w-10 h-10 border transition",
+            index === 0
+              ? "border-white/5 text-white/15 cursor-not-allowed"
+              : "border-white/20 text-white hover:bg-white hover:text-black",
+          ].join(" ")}
+          aria-label="Previous game"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M10 3L5 8L10 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
 
-            {/* Sub-label: Today / Tomorrow */}
-            {bucket.sublabel ? (
-              <span className={["mt-0.5 font-mono text-[8px] uppercase tracking-[0.5em]", isActive ? "text-black/60" : "text-white/40"].join(" ")}>
-                {bucket.sublabel}
-              </span>
-            ) : null}
+        {/* Card (animated) */}
+        <div
+          className="flex-1 min-w-0"
+          style={slideStyle}
+          onTouchStart={handleTouchStart}
+          onTouchEnd={handleTouchEnd}
+        >
+          <SlateCard game={games[index]} onOpen={onOpen} />
+        </div>
 
-            {/* Game count pip */}
-            <span className={[
-              "mt-2 font-mono text-xs font-bold",
-              isActive ? "text-black" : bucket.locked ? "text-white/30" : "text-white/70",
-            ].join(" ")}>
-              {bucket.games.length} {bucket.games.length === 1 ? "game" : "games"}
-            </span>
+        {/* Right arrow */}
+        <button
+          type="button"
+          onClick={next}
+          disabled={index === games.length - 1}
+          className={[
+            "flex-shrink-0 flex items-center justify-center w-10 h-10 border transition",
+            index === games.length - 1
+              ? "border-white/5 text-white/15 cursor-not-allowed"
+              : "border-white/20 text-white hover:bg-white hover:text-black",
+          ].join(" ")}
+          aria-label="Next game"
+        >
+          <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+            <path d="M6 3L11 8L6 13" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      </div>
 
-            {/* Active underline */}
-            {isActive && (
-              <span className="absolute bottom-0 left-0 right-0 h-0.5 bg-black" />
-            )}
-          </button>
-        );
-      })}
+      {/* Dot indicators */}
+      {games.length > 1 && (
+        <div className="flex items-center justify-center gap-2">
+          {games.map((g, i) => (
+            <button
+              key={g.gameId}
+              type="button"
+              onClick={() => go(i, i > index ? "left" : "right")}
+              className={[
+                "transition-all rounded-full",
+                i === index
+                  ? "w-4 h-1.5 bg-white"
+                  : "w-1.5 h-1.5 bg-white/25 hover:bg-white/50",
+              ].join(" ")}
+              aria-label={`Go to game ${i + 1}`}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Counter */}
+      <p className="text-center font-mono text-[9px] uppercase tracking-[0.5em] text-white/30">
+        {index + 1} / {games.length}
+      </p>
     </div>
   );
 }
 
-// ── Main Page ───────────────────────────────────────────────────────────────
+// ── Main Page ────────────────────────────────────────────────────────────────
 
 export function SlatePage({
   games,
@@ -286,18 +266,11 @@ export function SlatePage({
   slateError?: string | null;
   onOpenGame: (gameId: string) => void;
 }) {
-  const buckets = buildBuckets(games);
-  const [selectedDay, setSelectedDay] = useState<number>(0);
-
-  const activeBucket = buckets.find((b) => b.daysUntil === selectedDay) ?? buckets[0];
-  const visibleGames = activeBucket?.games ?? [];
-  const isLockedDay = (selectedDay) > 0;
-
   return (
     <main className="min-h-screen bg-black px-4 py-6 md:px-8">
       <div className="mx-auto flex max-w-7xl flex-col gap-6">
 
-        {/* ── Header ──────────────────────────────────────────────────── */}
+        {/* Header */}
         <section className="border border-white/10 bg-black p-6">
           <div className="flex flex-wrap items-end justify-between gap-4">
             <div>
@@ -315,16 +288,10 @@ export function SlatePage({
                 Click any matchup for AI-projected scores, player stat predictions, series momentum analysis, and coaching adjustments.
               </p>
             </div>
-
-            {/* Stats block — updates with selected day */}
-            <div className={["border px-6 py-5 transition-all", isLockedDay ? "border-white/5 opacity-50" : "border-white/10"].join(" ")}>
-              <p className="font-mono text-[9px] uppercase tracking-[0.5em] text-white">
-                {isLockedDay ? (activeBucket?.label ?? "Upcoming") : "Today"}
-              </p>
-              <p className="mt-2 font-mono text-4xl font-bold text-white">{visibleGames.length}</p>
-              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.4em] text-white">
-                {isLockedDay ? "Scheduled" : "Games"}
-              </p>
+            <div className="border border-white/10 px-6 py-5">
+              <p className="font-mono text-[9px] uppercase tracking-[0.5em] text-white">On The Slate</p>
+              <p className="mt-2 font-mono text-4xl font-bold text-white">{games.length}</p>
+              <p className="mt-1 font-mono text-[10px] uppercase tracking-[0.4em] text-white">Games</p>
             </div>
           </div>
         </section>
@@ -335,27 +302,9 @@ export function SlatePage({
           </section>
         )}
 
-        {/* ── Date Slider ─────────────────────────────────────────────── */}
-        <DateSlider buckets={buckets} selected={selectedDay} onSelect={setSelectedDay} />
+        {/* Carousel */}
+        <GameCarousel games={games} onOpen={onOpenGame} />
 
-        {/* ── Locked day notice ─────────────────────────────────────── */}
-        {isLockedDay && (
-          <div className="border border-white/5 bg-white/[0.02] px-5 py-3 font-mono text-[10px] uppercase tracking-[0.4em] text-white/40 text-center">
-            🔒 Predictions for {activeBucket?.label} unlock on game day
-          </div>
-        )}
-
-        {/* ── Game Cards ──────────────────────────────────────────────── */}
-        <section className="grid gap-4 xl:grid-cols-3">
-          {visibleGames.map((game) => (
-            <SlateCard key={game.gameId} game={game} onOpen={onOpenGame} />
-          ))}
-          {!slateError && visibleGames.length === 0 && (
-            <p className="col-span-3 py-12 text-center font-mono text-xs uppercase tracking-[0.4em] text-white/40">
-              No games scheduled.
-            </p>
-          )}
-        </section>
       </div>
     </main>
   );
