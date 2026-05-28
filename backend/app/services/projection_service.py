@@ -506,12 +506,15 @@ def _fetch_team_home_away_factor(team_abbr: str) -> dict:
         conn.close()
 
         result = dict(defaults)
+        result["home_pts_lift"] = 1.65  # fallback = league avg
 
         if off_row and off_row[2] and off_row[0] and off_row[1]:
             home_pts, away_pts, overall = float(off_row[0]), float(off_row[1]), float(off_row[2])
             # Clamp: max 2% boost at home, max 2% penalty away (conservative)
             result["home_off"] = max(1.000, min(1.020, home_pts / overall))
             result["away_off"] = max(0.980, min(1.000, away_pts / overall))
+            # Flat pts lift: actual home scoring - actual away scoring (team-specific HCA)
+            result["home_pts_lift"] = round(home_pts - away_pts, 2)
 
         if def_row and def_row[0] and def_row[1]:
             home_opp, away_opp = float(def_row[0]), float(def_row[1])
@@ -798,6 +801,96 @@ def _fetch_series_team_efficiency(team_abbr: str, opp_abbr: str) -> dict:
         return result
     except Exception:
         return {}
+
+
+def _series_win_prob(w: int, l: int, memo: dict | None = None) -> float:
+    """
+    P(team wins best-of-7 series) from state (w wins, l losses),
+    assuming each individual game is 50/50.
+    Computed recursively with memoization.
+    """
+    if memo is None:
+        memo = {}
+    if w == 4:
+        return 1.0
+    if l == 4:
+        return 0.0
+    if (w, l) in memo:
+        return memo[(w, l)]
+    result = 0.5 * _series_win_prob(w + 1, l, memo) + 0.5 * _series_win_prob(w, l + 1, memo)
+    memo[(w, l)] = result
+    return result
+
+
+def _compute_series_intensity(team_wins: int, opp_wins: int, is_playoffs: bool) -> float:
+    """
+    Returns a flat pts boost/penalty based on series position, using combinatorial
+    game leverage rather than hardcoded constants.
+
+    Formula:
+        leverage      = P(win series | win game) − P(win series | lose game)
+        series_win_p  = P(win series from current state)   [recursive, 50/50 per game]
+
+    Trailing team (desperate):  motivation = leverage × series_win_p × 1.5  → × 32
+    Leading team  (focused):    motivation = leverage × (1−series_win_p) × 0.6 → × 40
+
+    Normalisation constants calibrated so that:
+        2-3 elimination  →  +6.0 pts  (max trailing desperation)
+        3-2 closeout     →  +3.0 pts  (max leading focus)
+        0-3 facing sweep →  −2.0 pts  (demoralization penalty)
+        1-3 elimination  →  +1.5 pts  (some hope, still fighting)
+        Tied games       →   0.0 pts  (no directional modifier)
+    """
+    if not is_playoffs:
+        return 0.0
+
+    # Special: facing sweep — team has mentally checked out
+    if opp_wins == 3 and team_wins == 0:
+        return -2.0
+
+    memo: dict = {}
+    series_win_p = _series_win_prob(team_wins, opp_wins, memo)
+    leverage = (
+        _series_win_prob(team_wins + 1, opp_wins, memo)
+        - _series_win_prob(team_wins, opp_wins + 1, memo)
+    )
+    leverage = max(0.0, leverage)
+
+    if opp_wins > team_wins:
+        # Trailing team — scale desperation by whether it's elimination or just trailing
+        role_mult = 1.5 if opp_wins == 3 else 0.4
+        motivation = leverage * series_win_p * role_mult
+        return round(min(motivation * 32.0, 7.0), 1)
+
+    if team_wins > opp_wins:
+        # Leading team — professional focus, not desperate
+        motivation = leverage * (1.0 - series_win_p) * 0.6
+        return round(min(motivation * 40.0, 5.0), 1)
+
+    # Tied — no directional intensity modifier
+    return 0.0
+
+
+def _compute_flat_hca(team_hca: dict | None, is_home: bool, is_playoffs: bool) -> float:
+    """
+    Data-driven home court advantage as a flat pts bonus.
+
+    Uses each team's actual home/away scoring differential (stored in team_hca
+    as 'home_pts_lift'), regressed 30% toward the league mean to reduce schedule
+    noise, then scaled up 25% for playoffs (louder crowds, higher stakes).
+
+    Returns a positive value for home teams, negative for away teams.
+    """
+    LEAGUE_AVG_HCA = 1.65   # observed from DB: average (home_ppg − away_ppg) across all teams
+    REGRESSION     = 0.70   # 70% own data, 30% league mean — smooths out schedule variance
+    PLAYOFF_SCALE  = 1.25   # playoffs amplify home court by ~25%
+
+    raw_lift = (team_hca or {}).get("home_pts_lift", LEAGUE_AVG_HCA)
+    regressed = raw_lift * REGRESSION + LEAGUE_AVG_HCA * (1.0 - REGRESSION)
+    final = regressed * (PLAYOFF_SCALE if is_playoffs else 1.0)
+    # Clamp: no team should get more than +6 or less than -4 from pure HCA
+    final = max(-4.0, min(6.0, final))
+    return final if is_home else -final
 
 
 def _fetch_series_participants(home_abbr: str, away_abbr: str) -> dict[str, float]:
@@ -1246,6 +1339,8 @@ class ProjectionService:
             series_deficit: int = 0,
             is_elimination: bool = False,
             is_closeout: bool = False,
+            team_wins: int = 0,
+            opp_wins: int = 0,
             rest_factor: float = 1.0,
             road_fatigue: float = 0.0,
             motivation_factor: float = 0.0,
@@ -1292,28 +1387,14 @@ class ProjectionService:
             # How this team historically scores vs THIS specific opponent
             # Some teams just own certain matchups regardless of record
 
-            # ── Playoff intensity boost (applied post-blend so Vegas can't dilute) ─
-            # Elimination (1-3, 2-3): season on the line → team fights hard
-            # Down 2 games: desperate, need multiple wins to survive
-            # Down 1 game: must-win mentality
-            # Closeout attempt: closing team's professionalism/focus bonus
-            #
-            # SWEEP EXCEPTION (0-3): team is mentally broken — no fight left.
-            # Down 0-3 teams historically collapse (avg margin -18 pts in game 4).
-            # Apply a PENALTY instead of a boost — they've already checked out.
-            intensity_boost = 0.0
-            if is_playoffs:
-                is_facing_sweep = is_elimination and series_deficit >= 3
-                if is_facing_sweep:
-                    intensity_boost = -4.0  # collapse penalty — mentally done, season over
-                elif is_elimination:
-                    intensity_boost = 8.0   # backs against wall but still in it (1-3 or 2-3)
-                elif series_deficit >= 2:
-                    intensity_boost = 6.0   # desperate, need multiple wins to survive
-                elif series_deficit == 1:
-                    intensity_boost = 4.0   # must-win to stay in the series
-                if is_closeout:
-                    intensity_boost += 2.5  # closing team's professionalism/focus bonus
+            # ── Playoff intensity boost — combinatorial leverage formula ──────
+            # Replaces hardcoded constants with a data-driven formula:
+            #   leverage     = P(win series|win game) − P(win series|lose game)
+            #   series_win_p = P(win series from current state) at 50/50 per game
+            #   trailing: motivation = leverage × series_win_p × 1.5 × 32
+            #   leading:  motivation = leverage × (1−series_win_p) × 0.6 × 40
+            # Calibrated so 2-3 elim → +6 pts, 3-2 closeout → +3 pts, sweep → −2 pts.
+            intensity_boost = _compute_series_intensity(team_wins, opp_wins, is_playoffs)
 
             # ── Regular season: simple model, no series complexity ──────────
             # For non-playoff games there is no series data and the extra
@@ -1419,9 +1500,9 @@ class ProjectionService:
             player_estimate *= raw_off_mult
             effective_opp_def *= raw_def_mult
 
-            # Flat intangibles: home gets +3 pts in playoffs (crowd, refs, familiarity),
-            # +1 pt in regular season. Playoff crowds are louder, stakes higher.
-            flat_bonus = (3.0 if is_playoffs else 1.0) if is_home else (-3.0 if is_playoffs else -1.0)
+            # Flat HCA: derived from each team's actual home/away scoring differential,
+            # regressed toward league mean, scaled for playoffs. Replaces hardcoded ±3/±1.
+            flat_bonus = _compute_flat_hca(team_hca, is_home, is_playoffs)
 
             # Pace model — amplify when both teams play fast (more possessions = more pts)
             game_pace = (pace + opp_pace) / 2
@@ -1510,6 +1591,8 @@ class ProjectionService:
             series_deficit=home_series_deficit,
             is_elimination=home_is_elimination,
             is_closeout=home_is_closeout,
+            team_wins=home_series_wins,
+            opp_wins=away_series_wins,
             rest_factor=home_ctx["rest_factor"],
             road_fatigue=home_ctx["road_fatigue"],
             motivation_factor=home_ctx["motivation_factor"],
@@ -1533,6 +1616,8 @@ class ProjectionService:
             series_deficit=away_series_deficit,
             is_elimination=away_is_elimination,
             is_closeout=away_is_closeout,
+            team_wins=away_series_wins,
+            opp_wins=home_series_wins,
             rest_factor=away_ctx["rest_factor"],
             road_fatigue=away_ctx["road_fatigue"],
             motivation_factor=away_ctx["motivation_factor"],
@@ -1541,30 +1626,17 @@ class ProjectionService:
         )
 
         # ── Defensive intensity penalty ───────────────────────────────────────
-        # When a team is in must-win/elimination mode their defence spikes too.
-        # The opponent scores fewer points because the desperate team locks in.
-        # Penalty = 40% of the must-win team's intensity boost applied to opponent.
-        # SWEEP EXCEPTION: 0-3 teams have no defensive spike — they're cooked.
+        # When a team elevates in a must-win/elimination game, their defence
+        # spikes too — the opponent scores fewer points because the desperate
+        # team locks in harder. Penalty = 40% of that team's intensity boost.
+        # Uses the same combinatorial formula as the offence boost above.
         if is_playoffs:
-            home_intensity = 0.0
-            if home_is_elimination and home_series_deficit >= 3:
-                home_intensity = 0.0   # swept — no defensive spike, they've quit
-            elif home_is_elimination:  home_intensity = 8.0
-            elif home_series_deficit >= 2: home_intensity = 6.0
-            elif home_series_deficit == 1: home_intensity = 4.0
-            if home_is_closeout:       home_intensity += 2.5
+            home_intensity = _compute_series_intensity(home_series_wins, away_series_wins, is_playoffs)
+            away_intensity = _compute_series_intensity(away_series_wins, home_series_wins, is_playoffs)
 
-            away_intensity = 0.0
-            if away_is_elimination and away_series_deficit >= 3:
-                away_intensity = 0.0   # swept — no defensive spike, they've quit
-            elif away_is_elimination:  away_intensity = 8.0
-            elif away_series_deficit >= 2: away_intensity = 6.0
-            elif away_series_deficit == 1: away_intensity = 4.0
-            if away_is_closeout:       away_intensity += 2.5
-
-            # Desperate team's defence suppresses the opponent's offence
-            away_total = round(away_total - home_intensity * 0.4)
-            home_total = round(home_total - away_intensity * 0.4)
+            # Only positive boosts create a defensive spike (demoralized teams don't lock in)
+            away_total = round(away_total - max(0.0, home_intensity) * 0.4)
+            home_total = round(home_total - max(0.0, away_intensity) * 0.4)
 
             # Floor: never let a penalty push a team below 85 pts
             home_total = max(85, home_total)
