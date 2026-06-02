@@ -78,6 +78,19 @@ export type Snapshot = {
   }[];
   isCloseGame: boolean;
   predictedMargin: number;
+  otSimulation?: {
+    homeOtPts: number;
+    awayOtPts: number;
+    homeFinal: number;
+    awayFinal: number;
+    otWinner: "home" | "away";
+    contributors: {
+      playerId: string;
+      playerName: string;
+      teamId: string;
+      otPoints: number;
+    }[];
+  } | null;
   blowoutAlert?: boolean;
   blowoutScore?: { home: number; away: number } | null;
   blowoutSignals?: string[];

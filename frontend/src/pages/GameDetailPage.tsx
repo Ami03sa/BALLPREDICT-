@@ -244,10 +244,10 @@ function NBAScoreboard({
               </>
             )}
           </div>
-          {isCloseGame && (
+          {absMargin <= 2 && (
             <div className="border border-white/20 px-3 py-1 text-center">
               <p className="font-mono text-[10px] font-bold uppercase tracking-widest text-white">
-                Margin: {absMargin} pts — Too close to call
+                Too close to call
               </p>
             </div>
           )}

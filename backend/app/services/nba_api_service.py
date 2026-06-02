@@ -33,22 +33,62 @@ def _save_vegas_cache(cache: dict) -> None:
 _vegas_cache: dict[str, dict] = _load_vegas_cache()
 
 
-def _recent_dnp(player_id: str) -> bool:
-    """True if the player's last 5 logged games all have 0 minutes (DNP streak)."""
+def _recent_dnp(player_id: str) -> tuple[bool, str | None]:
+    """
+    Returns (is_dnp, reason) for the player.
+
+    Two signals — either triggers a DNP flag:
+      1. Zero-minutes streak: last 5 *logged* games all show 0 min.
+      2. Absence streak: player missing from 3+ of their team's last 5 game
+         dates (no log entry at all). This is the stronger signal for playoff
+         injuries — injured players simply aren't in the box score.
+    """
     if not _DB_PATH.exists():
-        return False
+        return False, None
     try:
         conn = sqlite3.connect(str(_DB_PATH))
+
+        # ── Signal 1: all recent logged minutes are zero ──────────────────────
         rows = conn.execute(
             "SELECT min FROM player_game_logs WHERE player_id = ? ORDER BY game_date DESC LIMIT 5",
             (player_id,),
         ).fetchall()
+        if rows and all(float(r[0] or 0) == 0.0 for r in rows):
+            conn.close()
+            return True, "DNP — 0 minutes in last 5 games"
+
+        # ── Signal 2: absent from majority of team's recent games ─────────────
+        # Find the player's current team from their most recent log entry.
+        team_row = conn.execute(
+            "SELECT team_abbreviation FROM player_game_logs WHERE player_id = ? ORDER BY game_date DESC LIMIT 1",
+            (player_id,),
+        ).fetchone()
+
+        if team_row:
+            team_abbr = team_row[0]
+            # Last 5 distinct game dates the team played
+            team_dates = conn.execute(
+                "SELECT DISTINCT game_date FROM player_game_logs WHERE team_abbreviation = ? ORDER BY game_date DESC LIMIT 5",
+                (team_abbr,),
+            ).fetchall()
+
+            if len(team_dates) >= 4:
+                date_list = [d[0] for d in team_dates]
+                placeholders = ",".join("?" * len(date_list))
+                player_dates = conn.execute(
+                    f"SELECT DISTINCT game_date FROM player_game_logs WHERE player_id = ? AND game_date IN ({placeholders})",
+                    [player_id] + date_list,
+                ).fetchall()
+                player_date_set = {r[0] for r in player_dates}
+                absences = sum(1 for d in date_list if d not in player_date_set)
+                if absences >= 3:
+                    conn.close()
+                    return True, f"Missed {absences} of last {len(date_list)} games"
+
         conn.close()
-        if not rows:
-            return False
-        return all(float(r[0] or 0) == 0.0 for r in rows)
+        return False, None
     except Exception:
-        return False
+        return False, None
 
 def get_quarter_weights(player_id: str) -> dict[str, list[float]] | None:
     """
@@ -310,14 +350,14 @@ def _build_team_state_from_season_stats(team_raw: dict, score: int, season_playe
         possessions_used = fga_avg + 0.44 * fta_avg + tov_avg_raw
         usage_rate = min(0.38, max(0.08, (possessions_used * 0.48) / max(1.0, min_avg)))
         player_id_str = str(p.get("PLAYER_ID", "0"))
-        is_dnp = _recent_dnp(player_id_str)
+        is_dnp, dnp_reason_str = _recent_dnp(player_id_str)
         players.append(PlayerGameState(
             player_id=player_id_str,
             player_name=str(p.get("PLAYER_NAME", "Unknown")),
             team_id=team_id,
             rotation_role="starter" if len(players) < 5 else "bench",
             availability_status="dnp" if is_dnp else "available",
-            dnp_reason="DNP last 5 games" if is_dnp else None,
+            dnp_reason=dnp_reason_str if is_dnp else None,
             usage_rate=round(usage_rate, 3),
             points=0.0,
             assists=0.0,

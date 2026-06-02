@@ -149,6 +149,19 @@ export async function fetchSnapshot(gameId: string): Promise<Snapshot> {
     winProbabilitySeries: data.win_probability_series,
     isCloseGame: data.is_close_game ?? false,
     predictedMargin: data.predicted_margin ?? 0,
+    otSimulation: data.ot_simulation ? {
+      homeOtPts: data.ot_simulation.home_ot_pts,
+      awayOtPts: data.ot_simulation.away_ot_pts,
+      homeFinal: data.ot_simulation.home_final,
+      awayFinal: data.ot_simulation.away_final,
+      otWinner: data.ot_simulation.ot_winner,
+      contributors: (data.ot_simulation.contributors ?? []).map((c: any) => ({
+        playerId: c.player_id,
+        playerName: c.player_name,
+        teamId: c.team_id,
+        otPoints: c.ot_points,
+      })),
+    } : null,
   };
 }
 

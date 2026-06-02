@@ -6,7 +6,7 @@ from pathlib import Path
 
 logger = logging.getLogger(__name__)
 
-from app.schemas.game import BreakoutStats, ConfidenceBand, GameSnapshot, PlayerProjection, StatLine
+from app.schemas.game import BreakoutStats, ConfidenceBand, GameSnapshot, OTContributor, OTSimulation, PlayerProjection, StatLine
 from app.services.insight_service import insight_service
 from app.simulation.prediction_engine import prediction_engine
 from app.simulation.state import GameContext
@@ -921,6 +921,72 @@ def _fetch_series_participants(home_abbr: str, away_abbr: str) -> dict[str, floa
         return {}
 
 
+def _fetch_series_ot_scoring_avgs(
+    home_abbr: str,
+    away_abbr: str,
+) -> tuple[float | None, float | None]:
+    """
+    Returns (home_avg, away_avg) — the per-game scoring averages for each team
+    in games played at the HOME team's arena in this playoff series.
+
+    Used to anchor OT simulation to actual playoff series pace/scoring rather
+    than regular-season ratings, which significantly overstate scoring pace.
+
+    Falls back to overall series average if fewer than 2 home games exist,
+    and to None if no series data is available at all (caller uses offRtg formula).
+    """
+    if not _DB_PATH.exists():
+        return None, None
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+
+        # Identify which home_away values correspond to the home team being at home
+        # home_abbr plays 'H'/'home' in their home games
+        rows = conn.execute(
+            """
+            SELECT g.game_id,
+                   MAX(CASE WHEN g.team_abbreviation = ? THEN g.team_pts END) AS home_pts,
+                   MAX(CASE WHEN g.team_abbreviation = ? THEN g.team_pts END) AS away_pts,
+                   MAX(CASE WHEN g.team_abbreviation = ? THEN g.home_away END) AS home_loc
+            FROM (
+                SELECT game_id, team_abbreviation, home_away, SUM(pts) AS team_pts
+                FROM player_game_logs
+                WHERE season_type = 'Playoffs'
+                  AND team_abbreviation IN (?, ?)
+                  AND opponent_abbreviation IN (?, ?)
+                GROUP BY game_id, team_abbreviation
+            ) g
+            GROUP BY g.game_id
+            """,
+            (home_abbr, away_abbr, home_abbr,
+             home_abbr, away_abbr, home_abbr, away_abbr),
+        ).fetchall()
+        conn.close()
+
+        # Filter to games played at home_abbr's arena
+        home_games = [
+            r for r in rows
+            if r[1] is not None and r[2] is not None
+            and str(r[3] or "").upper() in ("H", "HOME")
+        ]
+
+        if len(home_games) >= 2:
+            avg_h = sum(float(r[1]) for r in home_games) / len(home_games)
+            avg_a = sum(float(r[2]) for r in home_games) / len(home_games)
+            return avg_h, avg_a
+
+        # Fallback: overall series average
+        all_games = [r for r in rows if r[1] is not None and r[2] is not None]
+        if all_games:
+            avg_h = sum(float(r[1]) for r in all_games) / len(all_games)
+            avg_a = sum(float(r[2]) for r in all_games) / len(all_games)
+            return avg_h, avg_a
+
+        return None, None
+    except Exception:
+        return None, None
+
+
 def _usage_boost(projections: list, avg_min: dict, play_prob: dict) -> float:
     """
     When DNP players held a share of projected pts, boost remaining active players.
@@ -1123,6 +1189,155 @@ def _compute_blowout_info(
         "away": blowout_away,
         "signals": signals,
     }
+
+
+def _run_ot_simulation(
+    game_id: str,
+    home_total: int,
+    away_total: int,
+    home_projections: list,
+    away_projections: list,
+    *,
+    home_off_rtg: float = 110.0,
+    home_def_rtg: float = 110.0,
+    away_off_rtg: float = 110.0,
+    away_def_rtg: float = 110.0,
+    home_pace: float = 98.0,
+    away_pace: float = 98.0,
+    home_series_wins: int = 0,
+    away_series_wins: int = 0,
+    home_series_avg: float | None = None,
+    away_series_avg: float | None = None,
+) -> OTSimulation:
+    """
+    Simulates a hypothetical 5-minute NBA overtime period when the predicted
+    regulation margin is ≤ 2 pts.
+
+    Scoring model — series-first, offRtg fallback:
+        Primary: if actual home-game scoring averages for this series are available,
+          base_mu = series_avg × (5 / 48)
+          This uses real playoff pace and intensity rather than regular-season ratings,
+          which significantly overstate scoring and pace in playoff settings.
+        Fallback: if no series data exists (early in a series / pre-season),
+          base_mu = (avg_pace × 5/48) × (offRtg/100) × (league_avg_defRtg/opp_defRtg)
+
+        Adjustments (applied on top of whichever base is used):
+          · Net-rating gap  — stronger team scores slightly more in crunch time
+          · Series edge     — team leading the series is battle-hardened (+0.2 pts/win diff)
+          · HCA             — home court holds in OT, though smaller than regulation (+0.5 pts)
+        std dev ≈ 18 % of μ (Poisson-inspired overdispersion), floored at 1.2
+
+    Tiebreaker (if OT scores match after rounding):
+        The team with the better net-rating + series edge wins rather than
+        blindly favouring home — if the visitor is clearly superior they deserve
+        the edge.
+
+    Seeded by game_id hash so the same game always produces the same scenario
+    (deterministic across page loads / refreshes).
+
+    Player attribution:
+        Top 4 active players by projected pts (usage-weighted closers) split OT
+        pts proportionally to their projected scoring share, reflecting that stars
+        dominate the ball in crunch time.
+    """
+    import hashlib
+    import random
+
+    # ── Deterministic seed ────────────────────────────────────────────────────
+    seed = int(hashlib.md5(game_id.encode()).hexdigest()[:8], 16)
+    rng = random.Random(seed)
+
+    # ── Base expected OT score ────────────────────────────────────────────────
+    # Prefer actual playoff series scoring averages — these already bake in
+    # real playoff pace, defensive intensity, and fatigue.
+    # Fall back to the offRtg × possession model only when series data is absent.
+    if home_series_avg is not None and away_series_avg is not None:
+        # Scale 48-min series average down to a 5-min OT period
+        base_home_mu = home_series_avg * (5.0 / 48.0)
+        base_away_mu = away_series_avg * (5.0 / 48.0)
+    else:
+        # Fallback: possession-based model using regular-season ratings
+        avg_pace    = (home_pace + away_pace) / 2.0
+        possessions = avg_pace * 5.0 / 48.0
+        base_home_mu = possessions * (home_off_rtg / 100.0) * (_LEAGUE_AVG_DEF_RTG / away_def_rtg)
+        base_away_mu = possessions * (away_off_rtg / 100.0) * (_LEAGUE_AVG_DEF_RTG / home_def_rtg)
+
+    # ── Team-strength adjustments ─────────────────────────────────────────────
+    home_net = home_off_rtg - home_def_rtg   # positive = good team
+    away_net = away_off_rtg - away_def_rtg
+    net_diff = home_net - away_net           # positive = home is the stronger side
+
+    # Series edge: each win in the series represents proven clutch performance.
+    # A team up 3-2 has closed more tight games than the other side.
+    series_diff = home_series_wins - away_series_wins  # positive = home leads
+
+    # Composed adjustments (small — OT is inherently high-variance)
+    #   net-rating gap:  ±0.04 pts per rating point of differential
+    #   series edge:     ±0.20 pts per win ahead in the series
+    #   HCA in OT:       +0.50 pts for the home team (real but diminished vs regulation)
+    home_mu = base_home_mu + net_diff * 0.04 + series_diff * 0.20 + 0.50
+    away_mu = base_away_mu - net_diff * 0.04 - series_diff * 0.20
+
+    # ── Variance ──────────────────────────────────────────────────────────────
+    home_sigma = max(1.2, home_mu * 0.18)
+    away_sigma = max(1.2, away_mu * 0.18)
+
+    home_ot = max(2, round(rng.gauss(home_mu, home_sigma)))
+    away_ot = max(2, round(rng.gauss(away_mu, away_sigma)))
+
+    # ── Tiebreaker — favour the objectively stronger side ────────────────────
+    if home_ot == away_ot:
+        # Composite strength score: net rating + series advantage weighting
+        home_strength = home_net + series_diff * 2.0
+        away_strength = away_net - series_diff * 2.0
+        if home_strength >= away_strength:
+            home_ot += 1
+        else:
+            away_ot += 1
+
+    # ── Player attribution ────────────────────────────────────────────────────
+    def _ot_contributors(projections: list, team_ot_pts: int) -> list[OTContributor]:
+        active  = [p for p in projections if p.availability_status != "dnp"]
+        # Usage-weighted closers: best scorers dominate crunch-time possessions
+        closers = sorted(active, key=lambda p: p.projected_stats.mean.points, reverse=True)[:4]
+        if not closers:
+            return []
+
+        total_proj = sum(p.projected_stats.mean.points for p in closers)
+        if total_proj == 0:
+            return []
+
+        contributors: list[OTContributor] = []
+        allocated = 0
+        for i, player in enumerate(closers):
+            if i == len(closers) - 1:
+                pts = max(0, team_ot_pts - allocated)
+            else:
+                share = player.projected_stats.mean.points / total_proj
+                pts   = max(0, round(team_ot_pts * share))
+                allocated += pts
+
+            if pts > 0:
+                contributors.append(OTContributor(
+                    player_id=player.player_id,
+                    player_name=player.player_name,
+                    team_id=player.team_id,
+                    ot_points=pts,
+                ))
+
+        return contributors
+
+    home_contributors = _ot_contributors(home_projections, home_ot)
+    away_contributors = _ot_contributors(away_projections, away_ot)
+
+    return OTSimulation(
+        home_ot_pts=home_ot,
+        away_ot_pts=away_ot,
+        home_final=home_total + home_ot,
+        away_final=away_total + away_ot,
+        ot_winner="home" if home_ot > away_ot else "away",
+        contributors=home_contributors + away_contributors,
+    )
 
 
 class ProjectionService:
@@ -1906,8 +2121,6 @@ class ProjectionService:
             if game_id in _pregame_scores:
                 home_total, away_total = _pregame_scores[game_id]
         elif status == "live":
-            # Game in progress — use locked score if we have one (from pre-game
-            # prediction), otherwise lock right now on first live call.
             if game_id not in _pregame_scores:
                 _pregame_scores[game_id] = [home_total, away_total]
                 _save_score_cache(_pregame_scores)
@@ -1917,10 +2130,6 @@ class ProjectionService:
                 )
             home_total, away_total = _pregame_scores[game_id]
         else:
-            # Pre-game (status="scheduled"): lock on the very first prediction
-            # so the score shown in the morning is the same one frozen at tipoff.
-            # Subsequent scheduled calls return the locked value too — if the user
-            # wants a fresh prediction they can clear the cache manually.
             if game_id not in _pregame_scores:
                 _pregame_scores[game_id] = [home_total, away_total]
                 _save_score_cache(_pregame_scores)
@@ -1934,6 +2143,63 @@ class ProjectionService:
         if home_total == away_total:
             home_total += 1
 
+        # ── OT simulation ────────────────────────────────────────────────────
+        # When regulation ends within 2 pts the game is genuinely a coin flip.
+        # Silently simulate a 5-min OT: the resulting score becomes the final
+        # prediction shown to users. OT pts are also added to the projected
+        # stats of the players most likely to be on the floor.
+        # The "Too Close To Call" badge is shown — no OT mechanics are exposed.
+        _reg_margin = abs(home_total - away_total)
+        _is_ot_game = _reg_margin <= 2
+        if _is_ot_game:
+            _ot_home_avg, _ot_away_avg = _fetch_series_ot_scoring_avgs(home_tc, away_tc)
+            _ot = _run_ot_simulation(
+                game_id=game_id,
+                home_total=home_total,
+                away_total=away_total,
+                home_projections=home_player_projections,
+                away_projections=away_player_projections,
+                home_off_rtg=context.home_team.offensive_rating,
+                home_def_rtg=context.home_team.defensive_rating,
+                away_off_rtg=context.away_team.offensive_rating,
+                away_def_rtg=context.away_team.defensive_rating,
+                home_pace=context.home_team.pace,
+                away_pace=context.away_team.pace,
+                home_series_wins=home_series_wins,
+                away_series_wins=away_series_wins,
+                home_series_avg=_ot_home_avg,
+                away_series_avg=_ot_away_avg,
+            )
+            # Lift final totals to include OT scoring
+            home_total = _ot.home_final
+            away_total = _ot.away_final
+
+            # Add OT pts directly to each contributor's projected stat line so
+            # the player cards reflect the extra production without explanation.
+            _ot_pts_map: dict[str, int] = {c.player_id: c.ot_points for c in _ot.contributors}
+
+            def _add_ot_pts(proj_list: list) -> list:
+                updated = []
+                for p in proj_list:
+                    extra = _ot_pts_map.get(p.player_id, 0)
+                    if extra > 0:
+                        m  = p.projected_stats.mean
+                        lo = p.projected_stats.low
+                        hi = p.projected_stats.high
+                        new_m  = m.model_copy(update={"points": round(m.points + extra, 1)})
+                        new_lo = lo.model_copy(update={"points": round(lo.points + extra * 0.7, 1)})
+                        new_hi = hi.model_copy(update={"points": round(hi.points + extra * 1.2, 1)})
+                        new_band = p.projected_stats.model_copy(
+                            update={"mean": new_m, "low": new_lo, "high": new_hi}
+                        )
+                        updated.append(p.model_copy(update={"projected_stats": new_band}))
+                    else:
+                        updated.append(p)
+                return updated
+
+            home_player_projections = _add_ot_pts(home_player_projections)
+            away_player_projections = _add_ot_pts(away_player_projections)
+
         home_projection = prediction_engine.project_team(
             context, context.home_team, context.away_team, True,
             player_score_sum=home_total, opponent_score_sum=away_total,
@@ -1945,16 +2211,10 @@ class ProjectionService:
 
         player_projections = home_player_projections + away_player_projections
 
-        # Win probability series: anchor to the model's pre-game estimate, then
-        # show how uncertainty compresses as more of the game is played.
-        # At minute 0 (full game ahead) uncertainty is highest → closer to 0.5.
-        # At minute 48 (game over) uncertainty collapses → converges to the projection.
         base_wp = home_projection.win_probability
         win_series = []
         for minute in range(0, 49, 4):
             fraction_played = minute / 48.0
-            # Interpolate between 0.5 (max uncertainty) and base_wp (full certainty)
-            # using a gentle curve so early minutes don't swing too far from 0.5.
             time_wp = 0.5 + (base_wp - 0.5) * (0.25 + 0.75 * fraction_played)
             time_wp = max(0.05, min(0.95, time_wp))
             win_series.append({"minute": minute, "home": round(time_wp, 3), "away": round(1 - time_wp, 3)})
@@ -1989,8 +2249,9 @@ class ProjectionService:
             possession_feed=possession_feed or default_feed,
             insights=insight_service.build_game_insights(context),
             win_probability_series=win_series,
-            is_close_game=margin <= 5,
+            is_close_game=_is_ot_game,
             predicted_margin=home_total - away_total,
+            ot_simulation=None,
             blowout_alert=blowout_info["is_blowout"],
             blowout_score=blowout_score_obj,
             blowout_signals=blowout_info["signals"],

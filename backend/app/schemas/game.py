@@ -98,6 +98,27 @@ class BlowoutScore(BaseModel):
     away: int
 
 
+class OTContributor(BaseModel):
+    player_id: str
+    player_name: str
+    team_id: str
+    ot_points: int
+
+
+class OTSimulation(BaseModel):
+    """
+    Hypothetical overtime scenario when predicted margin ≤ 2 pts.
+    Simulates a 5-minute OT period — shown as a 'What If?' alongside
+    the regulation prediction, never replacing it.
+    """
+    home_ot_pts: int
+    away_ot_pts: int
+    home_final: int          # regulation score + OT pts
+    away_final: int
+    ot_winner: str           # "home" or "away"
+    contributors: list[OTContributor]
+
+
 class GameSnapshot(BaseModel):
     game_id: str
     status: str
@@ -112,6 +133,9 @@ class GameSnapshot(BaseModel):
     win_probability_series: list[dict[str, float]]
     is_close_game: bool = False
     predicted_margin: int = 0
+    # OT scenario — triggered when predicted margin ≤ 2 pts.
+    # Simulates a 5-min OT and attributes points to likely contributors.
+    ot_simulation: OTSimulation | None = None
     # Blowout detection — computed independently from the base prediction.
     # When 2+ signals align (series dominance, rest mismatch, pace/defense gap),
     # we surface a blowout badge with an amplified score estimate.
