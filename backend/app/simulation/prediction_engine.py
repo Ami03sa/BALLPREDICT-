@@ -214,9 +214,11 @@ def _player_history(player_id: str, is_playoffs: bool = False, opp_team_id: str 
                 # Series has started: use ONLY these games. Playoff basketball is
                 # a different game — regular season data from other contexts pollutes.
                 rows = list(series_rows)
+                form_rows = None  # series rows ARE the best form data; no split needed
             else:
-                # Game 1 (no series data yet): fall back to H2H regular season
-                # matchups between these two teams as the best available signal.
+                # Game 1 (no series data yet): use H2H regular season matchups as
+                # the primary history source — captures the structural matchup pattern
+                # (how Wembanyama performs specifically vs NYK, not vs OKC).
                 rows = conn.execute(
                     f"{sel} WHERE player_id=? AND min>0 AND opponent_abbreviation=?"
                     " ORDER BY game_date DESC LIMIT 10",
@@ -227,12 +229,26 @@ def _player_history(player_id: str, is_playoffs: bool = False, opp_team_id: str 
                         f"{sel} WHERE player_id=? AND min>0 ORDER BY game_date DESC LIMIT 10",
                         (player_id,),
                     ).fetchall()
+                    form_rows = None  # same source; no split needed
+                else:
+                    # H2H data found — ALSO fetch recent all-game form (last 10 games
+                    # across ALL opponents, including the just-finished OKC series).
+                    # This gives XGBoost two orthogonal signals:
+                    #   • H2H base    → "Wembanyama averages 30 vs NYK" (matchup pattern)
+                    #   • Recent form → "he's coming off a 28-pt OKC series" (hot/cold streak)
+                    # last5/last10/season_avg will reflect H2H; ewm3/ewm7/ewm15 will use
+                    # recent form so the streak signal feeds through to the model correctly.
+                    form_rows = conn.execute(
+                        f"{sel} WHERE player_id=? AND min>0 ORDER BY game_date DESC LIMIT 10",
+                        (player_id,),
+                    ).fetchall()
         else:
             rows = conn.execute(
                 f"{sel} WHERE player_id=? AND min>0 ORDER BY game_date DESC LIMIT 10",
                 (player_id,),
             ).fetchall()
             series_count = 0
+            form_rows = None
         conn.close()
     except Exception:
         return {}
@@ -242,6 +258,11 @@ def _player_history(player_id: str, is_playoffs: bool = False, opp_team_id: str 
     # _series_count: how many leading entries are from the current playoff series.
     # last3 is capped to this so it never crosses into other opponents.
     history["_series_count"] = series_count
+    # _form_vals: recent all-game form data (used for ewm3/ewm7/ewm15 in _build_features).
+    # Only set when we have H2H-specific history as the base — for in-series games or
+    # generic last-10 history, the main history IS the form data (no split needed).
+    if form_rows:
+        history["_form_vals"] = {c: [r[i] for r in form_rows] for i, c in enumerate(cols)}
     return history
 
 
@@ -524,26 +545,35 @@ def _build_features(
     # from the current series only. last3 must not cross into other opponents.
     series_count = int(history.get("_series_count", 0))
 
+    # _form_vals: recent all-game history (all opponents, last 10 games).
+    # Set only when the primary history is H2H-specific (playoff Game 1 before series starts).
+    # When available, EWM streak signals are derived from this so the model sees
+    # "how has this player been performing lately overall" separately from
+    # "how do they typically perform vs THIS opponent".
+    form_history = history.get("_form_vals") or history
+
+    def _ewm(v: np.ndarray, span: int) -> float:
+        if len(v) == 0:
+            return 0.0
+        alpha = 2.0 / (span + 1.0)
+        result = v[0]
+        for x in v[1:]:
+            result = alpha * x + (1 - alpha) * result
+        return float(result)
+
     for stat in ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov", "min", "fg_pct", "fg3_pct", "usg_pct"]:
         vals = history.get(stat, [])
         row[f"{stat}_last5"]      = _rolling(vals, 5)
         row[f"{stat}_last10"]     = _rolling(vals, 10)
         row[f"{stat}_season_avg"] = float(np.mean(vals)) if vals else 0.0
 
-        # Exponentially weighted moving averages — recent games weighted more heavily.
+        # Exponentially weighted moving averages — use recent all-game form data
+        # (not H2H-only) so the hot/cold streak signal reflects how the player
+        # is playing right now across ALL opponents, not just vs this one team.
         # ewm3 captures immediate streak, ewm7 medium form, ewm15 season arc.
-        # Mirrors the same EWM computed in train_model.py (span, adjust=False, shift(1)).
-        if vals:
-            arr = np.array(vals[:15], dtype=float)  # enough history for ewm15
-            # Compute recursive EWM: w_i = (1-alpha)^i, alpha = 2/(span+1)
-            def _ewm(v: np.ndarray, span: int) -> float:
-                if len(v) == 0:
-                    return 0.0
-                alpha = 2.0 / (span + 1.0)
-                result = v[0]
-                for x in v[1:]:
-                    result = alpha * x + (1 - alpha) * result
-                return float(result)
+        form_vals = form_history.get(stat, vals)
+        if form_vals:
+            arr = np.array(form_vals[:15], dtype=float)  # enough history for ewm15
             row[f"{stat}_ewm3"]  = _ewm(arr, 3)
             row[f"{stat}_ewm7"]  = _ewm(arr, 7)
             row[f"{stat}_ewm15"] = _ewm(arr, 15)
@@ -827,7 +857,11 @@ class PredictionEngine:
         adjustments = coaching_engine.build_player_counters(context, offense, defense, player)
         pressure     = min(1.0, player.matchup_difficulty + player.fatigue_index + len(adjustments) * 0.08)
         is_home      = offense.team_id == context.home_team.team_id
-        is_playoffs  = context.playoff_intensity >= 0.65
+        # Match the same threshold used in projection_service (_blended_team_total)
+        # so the H2H opponent-specific history branch activates for playoff games.
+        # With playoff_intensity=0.55 set at startup, 0.65 was never reached and
+        # _player_history was fetching last-10-generic instead of H2H vs THIS opponent.
+        is_playoffs  = context.playoff_intensity >= 0.55
 
         hot = _hot_factor(player.player_id)
 

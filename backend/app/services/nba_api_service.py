@@ -450,10 +450,13 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
     from app.core.config import settings
     from app.services.providers.nba_live_client import nba_live_client
 
-    # Fetch injury report, Vegas odds, and real team ratings in parallel.
-    injury_report, (vegas_totals, vegas_spreads, event_ids), team_ratings = await asyncio.gather(
+    # Fetch injury report and team ratings in parallel.
+    # Odds API (paid) has been removed — ESPN BET is the sole odds source.
+    # This keeps the pipeline stable across quota resets and doesn't require
+    # a paid subscription. When we re-enable a paid provider later, just
+    # restore the fetch_vegas_totals(settings.odds_api_key) call here.
+    injury_report, team_ratings = await asyncio.gather(
         nba_live_client.fetch_injury_report(),
-        nba_live_client.fetch_vegas_totals(settings.odds_api_key),
         nba_live_client.fetch_team_ratings(),
     )
     if injury_report:
@@ -461,31 +464,26 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
     if team_ratings:
         logger.info("Team ratings loaded: %d teams", len(team_ratings))
 
-    # Fall back to ESPN odds if The Odds API is unavailable (quota exhausted, no key, etc.)
-    if not vegas_totals:
-        logger.info("Odds API unavailable — falling back to ESPN odds")
-        espn_totals, espn_spreads = await nba_live_client.fetch_vegas_totals_espn()
-        if espn_totals:
-            vegas_totals = espn_totals
-            vegas_spreads = espn_spreads
-            logger.info("ESPN odds loaded: %d games", len(vegas_totals))
+    # ESPN BET is now the primary (and only) odds source for team game totals.
+    # Locked per game_id on first fetch so the line stays stable all day even if
+    # ESPN's feed goes dark later (vegas_cache.json persistence).
+    vegas_totals: dict = {}
+    vegas_spreads: dict = {}
+    espn_totals, espn_spreads = await nba_live_client.fetch_vegas_totals_espn()
+    if espn_totals:
+        vegas_totals = espn_totals
+        vegas_spreads = espn_spreads
+        logger.info("ESPN BET odds loaded: %d games", len(vegas_totals))
     else:
-        logger.info("Vegas totals loaded: %d games (Odds API)", len(vegas_totals))
+        logger.info("ESPN BET odds unavailable — model will run without Vegas anchor")
 
-    # Fetch player props and push into prediction engine.
-    # Real market props (Odds API) used at 45% blend weight.
-    # Synthetic DB props (last5×0.65 + season×0.35) used at 30% as automatic fallback.
+    # Player props: no paid provider → synthetic DB props only.
+    # Synthetic = last5_avg × 0.65 + season_avg × 0.35, loaded automatically
+    # by _load_synthetic_props() inside prediction_engine for each player.
+    # Weight in prop blend: synthetic 15% vs market 45% — lower weight reflects
+    # that these are model-derived, not sharp-money lines.
     from app.simulation.prediction_engine import set_player_props, _load_synthetic_props
-    if event_ids and settings.odds_api_key:
-        eids = list(event_ids.values())
-        player_props = await nba_live_client.fetch_player_props_bulk(settings.odds_api_key, eids)
-        if player_props:
-            set_player_props(player_props)
-            logger.info("Player props loaded: %d players (market)", len(player_props))
-        else:
-            set_player_props({})
-    else:
-        set_player_props({})
+    set_player_props({})  # clear any stale market props; synthetic props load on demand
 
     scoreboard = await nba_live_client.fetch_scoreboard()
     games = scoreboard.get("scoreboard", {}).get("games", [])

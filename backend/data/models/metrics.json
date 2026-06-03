@@ -1,35 +1,35 @@
 {
   "pts": {
-    "mae": 4.679,
-    "rmse": 6.064
+    "mae": 4.652,
+    "rmse": 6.032
   },
   "ast": {
-    "mae": 1.382,
-    "rmse": 1.854
+    "mae": 1.375,
+    "rmse": 1.844
   },
   "reb": {
-    "mae": 1.903,
-    "rmse": 2.493
+    "mae": 1.896,
+    "rmse": 2.484
   },
   "stl": {
-    "mae": 0.751,
-    "rmse": 0.955
+    "mae": 0.749,
+    "rmse": 0.953
   },
   "blk": {
-    "mae": 0.536,
-    "rmse": 0.736
+    "mae": 0.535,
+    "rmse": 0.735
   },
   "fg3m": {
-    "mae": 0.922,
-    "rmse": 1.258
+    "mae": 0.921,
+    "rmse": 1.255
   },
   "tov": {
-    "mae": 0.918,
-    "rmse": 1.193
+    "mae": 0.916,
+    "rmse": 1.191
   },
   "win_prob": {
-    "accuracy": 69.0,
-    "log_loss": 0.581,
+    "accuracy": 69.9,
+    "log_loss": 0.579,
     "features": [
       "is_home",
       "rest_days",

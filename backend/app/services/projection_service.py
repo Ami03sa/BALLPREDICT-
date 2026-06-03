@@ -1567,18 +1567,20 @@ class ProjectionService:
             # ── Player model estimate ───────────────────────────────────────
             boost = _usage_boost(projections, avg_min, play_prob)
 
+            # XGBoost predicts full-game stats per player — already calibrated to
+            # each player's typical playing time from training data.  We apply
+            # play_prob only as a DNP-risk discount (starters ≈ 0.92–0.98, fringe
+            # bench ≈ 0.65–0.75).  We do NOT apply an extra minute-normalization on
+            # top, because that double-counts: the model already knows a bench player
+            # averages 8 minutes, so predicting 3 pts for them is already correct —
+            # cutting it again by 240/total_proj_min would under-estimate team scoring
+            # by 20–30% and produce unrealistically low scores (e.g. 97-95 instead
+            # of the Vegas-implied 111-107).
             prob_weighted_pts = sum(
                 p.projected_stats.mean.points * play_prob.get(p.player_id, 0.75)
                 for p in active
             ) * boost
-
-            # Minutes normalization: keep total minutes ≤ 240
-            total_proj_min = sum(
-                avg_min.get(p.player_id, 15.0) * play_prob.get(p.player_id, 0.75)
-                for p in active
-            )
-            minute_scale = min(1.0, _GAME_MINUTES / max(1.0, total_proj_min))
-            player_estimate = prob_weighted_pts * minute_scale
+            player_estimate = prob_weighted_pts
 
             # Recent team form: hot teams score more, cold teams score less
             player_estimate *= form_factor
@@ -1630,11 +1632,19 @@ class ProjectionService:
                 adj = off_rating * (max(eff_opp_def, 90.0) / _LEAGUE_AVG_DEF_RTG)
                 pace_est = (adj * gp) / 100.0 * pa
                 if vegas_implied is not None:
-                    blended = player_estimate * 0.50 + pace_est * 0.05 + vegas_implied * 0.45
+                    # Vegas is very accurate for regular season games. Player model
+                    # (now without minute_scale bias) is an accurate pre-game signal.
+                    blended = player_estimate * 0.40 + pace_est * 0.10 + vegas_implied * 0.50
                 else:
                     blended = player_estimate * 0.65 + pace_est * 0.35
                 # Regular season flat adjustments: road fatigue + motivation + H2H
                 flat_adj = flat + road_fatigue + motivation_factor + h2h_factor
+                logger.debug(
+                    "SCORE BLEND RS [is_home=%s]: player=%.1f pace=%.1f vegas=%s → %.1f",
+                    is_home, player_estimate, pace_est,
+                    f"{vegas_implied:.1f}" if vegas_implied else "N/A",
+                    round(blended + flat_adj),
+                )
                 return round(blended + flat_adj)
 
             # ── Series team-level adjustments ──────────────────────────────
@@ -1744,18 +1754,29 @@ class ProjectionService:
                 # tell us far more than the opening line — reduce Vegas aggressively.
                 # Vegas also has a known home-team bias in playoffs (crowds, narratives)
                 # that causes it to underestimate road dominance like OKC's 2025 run.
+                #
+                # Note: minute_scale was removed — XGBoost predicts full-game stats
+                # already calibrated to playing time, so player_estimate is now an
+                # accurate pre-game signal. Weights below are tuned accordingly.
                 if series_games >= 3:
-                    # 3+ games: player model drives, Vegas still informative
-                    player_w, vegas_w, pace_w = 0.75, 0.20, 0.05
+                    # 3+ games: player model + series data drives, Vegas informative
+                    player_w, vegas_w, pace_w = 0.70, 0.25, 0.05
                 elif series_games == 2:
-                    player_w, vegas_w, pace_w = 0.75, 0.20, 0.05
+                    player_w, vegas_w, pace_w = 0.65, 0.30, 0.05
                 elif series_games == 1:
-                    player_w, vegas_w, pace_w = 0.60, 0.35, 0.05
+                    player_w, vegas_w, pace_w = 0.55, 0.40, 0.05
                 else:
-                    # No series data → trust Vegas heavily (Game 1)
-                    player_w, vegas_w, pace_w = 0.50, 0.45, 0.05
+                    # No series data (Game 1): Vegas is the best independent anchor.
+                    # Player model (now without minute_scale bias) gets equal weight.
+                    player_w, vegas_w, pace_w = 0.45, 0.50, 0.05
                 blended = player_estimate * player_w + pace_estimate * pace_w + vegas_implied * vegas_w
                 blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor + coach_adjustment
+                logger.debug(
+                    "SCORE BLEND [is_home=%s sg=%d]: "
+                    "prob_wt=%.1f player=%.1f pace=%.1f vegas=%.1f w=(%.2f/%.2f/%.2f) → %.1f",
+                    is_home, series_games, prob_weighted_pts, player_estimate,
+                    pace_estimate, vegas_implied, player_w, pace_w, vegas_w, blended,
+                )
                 return round(blended)
 
             # No Vegas:
