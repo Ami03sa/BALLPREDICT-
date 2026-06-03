@@ -1860,6 +1860,16 @@ class ProjectionService:
         # Rescale individual players so their scores sum to the team total.
         # This keeps individual predictions correlated with the final score —
         # if the team total moves up/down, every player moves proportionally.
+        # Role-based ceiling: max multiplier any player can receive from DNP scaling.
+        # Prevents bench/rotation players from absorbing a star's full load —
+        # in reality, the points are redistributed in smaller pieces across many players,
+        # not all flowing to one role player.
+        #   star:     1.50× their XGBoost base (primary option, can truly step up)
+        #   starter:  1.40× (secondary options take on more, but not a full star load)
+        #   rotation: 1.30× (rotation players get meaningful extra minutes, not stars)
+        #   bench:    1.20× (spot minutes — cannot replicate a star's production)
+        _ROLE_BOOST_CAP = {"star": 1.50, "starter": 1.40, "rotation": 1.30, "bench": 1.20}
+
         def _apply_scale(projections: list, team_total: int) -> list[PlayerProjection]:
             active = [p for p in projections if p.availability_status != "dnp"]
             prob_weighted_raw = sum(
@@ -1867,10 +1877,18 @@ class ProjectionService:
                 for p in active
             )
             team_scale = team_total / max(1.0, prob_weighted_raw)
-            return [
-                _rescale_player_pts(p, team_scale * play_prob.get(p.player_id, 0.75))
-                for p in projections
-            ]
+            scaled = []
+            for p in projections:
+                if p.availability_status == "dnp":
+                    scaled.append(p)
+                    continue
+                combined = team_scale * play_prob.get(p.player_id, 0.75)
+                # Cap: no player's pts can grow more than their role allows.
+                # e.g. Caruso (bench, 8 pts base) → max 8 × 1.20 = 9.6 pts
+                role_cap = _ROLE_BOOST_CAP.get(p.rotation_role, 1.25)
+                capped   = min(combined, role_cap)
+                scaled.append(_rescale_player_pts(p, capped))
+            return scaled
 
         home_player_projections = _apply_scale(home_player_projections, home_total)
         away_player_projections = _apply_scale(away_player_projections, away_total)
