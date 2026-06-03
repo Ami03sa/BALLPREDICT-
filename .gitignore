@@ -14,6 +14,7 @@ coverage/
 *.sqlite3
 
 data/nba_training.db
+backend/data/nba_training.db
 backend/data/models/
 backend/data/score_cache.json
 backend/data/vegas_cache.json
