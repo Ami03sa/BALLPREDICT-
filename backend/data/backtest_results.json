@@ -1,0 +1,323 @@
+{
+  "folds": [
+    {
+      "test_season": "2023-24",
+      "train_seasons": [
+        "2021-22",
+        "2022-23"
+      ],
+      "pts": {
+        "mae": 4.723,
+        "rmse": 6.076
+      },
+      "ast": {
+        "mae": 1.403,
+        "rmse": 1.881
+      },
+      "reb": {
+        "mae": 1.929,
+        "rmse": 2.526
+      },
+      "stl": {
+        "mae": 0.711,
+        "rmse": 0.906
+      },
+      "blk": {
+        "mae": 0.571,
+        "rmse": 0.782
+      },
+      "fg3m": {
+        "mae": 0.91,
+        "rmse": 1.247
+      },
+      "tov": {
+        "mae": 0.921,
+        "rmse": 1.181
+      },
+      "score_mae": 13.49,
+      "score_rmse": 17.32,
+      "win_accuracy": 59.1,
+      "pts_ci_coverage": 38.7,
+      "naive_pts_mae": 5.398,
+      "model_lift_pts": 0.675
+    },
+    {
+      "test_season": "2024-25",
+      "train_seasons": [
+        "2021-22",
+        "2022-23",
+        "2023-24"
+      ],
+      "pts": {
+        "mae": 4.749,
+        "rmse": 6.121
+      },
+      "ast": {
+        "mae": 1.394,
+        "rmse": 1.862
+      },
+      "reb": {
+        "mae": 1.954,
+        "rmse": 2.556
+      },
+      "stl": {
+        "mae": 0.749,
+        "rmse": 0.952
+      },
+      "blk": {
+        "mae": 0.544,
+        "rmse": 0.744
+      },
+      "fg3m": {
+        "mae": 0.944,
+        "rmse": 1.285
+      },
+      "tov": {
+        "mae": 0.917,
+        "rmse": 1.199
+      },
+      "score_mae": 14.28,
+      "score_rmse": 18.3,
+      "win_accuracy": 57.1,
+      "pts_ci_coverage": 37.5,
+      "naive_pts_mae": 5.441,
+      "model_lift_pts": 0.692
+    },
+    {
+      "test_season": "2025-26",
+      "train_seasons": [
+        "2021-22",
+        "2022-23",
+        "2023-24",
+        "2024-25"
+      ],
+      "pts": {
+        "mae": 4.682,
+        "rmse": 6.065
+      },
+      "ast": {
+        "mae": 1.383,
+        "rmse": 1.855
+      },
+      "reb": {
+        "mae": 1.904,
+        "rmse": 2.492
+      },
+      "stl": {
+        "mae": 0.751,
+        "rmse": 0.956
+      },
+      "blk": {
+        "mae": 0.536,
+        "rmse": 0.736
+      },
+      "fg3m": {
+        "mae": 0.926,
+        "rmse": 1.26
+      },
+      "tov": {
+        "mae": 0.918,
+        "rmse": 1.193
+      },
+      "score_mae": 13.77,
+      "score_rmse": 17.63,
+      "win_accuracy": 61.2,
+      "pts_ci_coverage": 37.6,
+      "naive_pts_mae": 5.621,
+      "model_lift_pts": 0.939
+    }
+  ],
+  "averages": {
+    "Season": "AVG",
+    "pts_MAE": 4.718,
+    "ast_MAE": 1.393,
+    "reb_MAE": 1.929,
+    "stl_MAE": 0.737,
+    "blk_MAE": 0.55,
+    "fg3m_MAE": 0.927,
+    "tov_MAE": 0.919,
+    "Win%": 59.1,
+    "Score_MAE": 13.85,
+    "CI_cov%": 37.9,
+    "Lift": 0.769
+  },
+  "worst_predictions": [
+    {
+      "season": "2025-26",
+      "player_name": "Bam Adebayo",
+      "team_abbreviation": "MIA",
+      "opponent_abbreviation": "WAS",
+      "game_date": "2026-03-10 00:00:00",
+      "pts": 83.0,
+      "pred_pts": 22.529611587524414,
+      "error": 60.470388412475586
+    },
+    {
+      "season": "2023-24",
+      "player_name": "Malachi Flynn",
+      "team_abbreviation": "DET",
+      "opponent_abbreviation": "ATL",
+      "game_date": "2024-04-03 00:00:00",
+      "pts": 50.0,
+      "pred_pts": 9.038918495178223,
+      "error": 40.96108150482178
+    },
+    {
+      "season": "2023-24",
+      "player_name": "Karl-Anthony Towns",
+      "team_abbreviation": "MIN",
+      "opponent_abbreviation": "CHA",
+      "game_date": "2024-01-22 00:00:00",
+      "pts": 62.0,
+      "pred_pts": 21.462589263916016,
+      "error": 40.537410736083984
+    },
+    {
+      "season": "2023-24",
+      "player_name": "Luka Don\u010di\u0107",
+      "team_abbreviation": "DAL",
+      "opponent_abbreviation": "ATL",
+      "game_date": "2024-01-26 00:00:00",
+      "pts": 73.0,
+      "pred_pts": 33.980594635009766,
+      "error": 39.019405364990234
+    },
+    {
+      "season": "2023-24",
+      "player_name": "Joel Embiid",
+      "team_abbreviation": "PHI",
+      "opponent_abbreviation": "SAS",
+      "game_date": "2024-01-22 00:00:00",
+      "pts": 70.0,
+      "pred_pts": 31.911376953125,
+      "error": 38.088623046875
+    },
+    {
+      "season": "2024-25",
+      "player_name": "Pat Connaughton",
+      "team_abbreviation": "MIL",
+      "opponent_abbreviation": "DET",
+      "game_date": "2025-04-13 00:00:00",
+      "pts": 43.0,
+      "pred_pts": 5.611363410949707,
+      "error": 37.38863658905029
+    },
+    {
+      "season": "2025-26",
+      "player_name": "Aaron Gordon",
+      "team_abbreviation": "DEN",
+      "opponent_abbreviation": "GSW",
+      "game_date": "2025-10-23 00:00:00",
+      "pts": 50.0,
+      "pred_pts": 13.607919692993164,
+      "error": 36.392080307006836
+    },
+    {
+      "season": "2024-25",
+      "player_name": "De'Aaron Fox",
+      "team_abbreviation": "SAC",
+      "opponent_abbreviation": "MIN",
+      "game_date": "2024-11-15 00:00:00",
+      "pts": 60.0,
+      "pred_pts": 24.443805694580078,
+      "error": 35.55619430541992
+    },
+    {
+      "season": "2023-24",
+      "player_name": "Jalen Brunson",
+      "team_abbreviation": "NYK",
+      "opponent_abbreviation": "SAS",
+      "game_date": "2024-03-29 00:00:00",
+      "pts": 61.0,
+      "pred_pts": 25.614166259765625,
+      "error": 35.385833740234375
+    },
+    {
+      "season": "2024-25",
+      "player_name": "Jamal Murray",
+      "team_abbreviation": "DEN",
+      "opponent_abbreviation": "POR",
+      "game_date": "2025-02-12 00:00:00",
+      "pts": 55.0,
+      "pred_pts": 20.37846565246582,
+      "error": 34.62153434753418
+    }
+  ],
+  "hard_players": [
+    {
+      "player_name": "Kennedy Chandler",
+      "avg_mae": 7.87200700153004,
+      "avg_actual": 15.0
+    },
+    {
+      "player_name": "Stephen Curry",
+      "avg_mae": 7.815615312534564,
+      "avg_actual": 25.864779064779068
+    },
+    {
+      "player_name": "Zach LaVine",
+      "avg_mae": 7.579587279989693,
+      "avg_actual": 20.65226149226149
+    },
+    {
+      "player_name": "Anthony Edwards",
+      "avg_mae": 7.495812523154796,
+      "avg_actual": 27.67539759818241
+    },
+    {
+      "player_name": "Anthony Davis",
+      "avg_mae": 7.4162434267595865,
+      "avg_actual": 23.25323357413141
+    },
+    {
+      "player_name": "Trae Young",
+      "avg_mae": 7.4042275704525755,
+      "avg_actual": 22.62641325536062
+    },
+    {
+      "player_name": "Cam Thomas",
+      "avg_mae": 7.33130827861691,
+      "avg_actual": 20.081271249076128
+    },
+    {
+      "player_name": "Joel Embiid",
+      "avg_mae": 7.086461049181569,
+      "avg_actual": 28.450067476383268
+    },
+    {
+      "player_name": "Luka Don\u010di\u0107",
+      "avg_mae": 7.078176567895071,
+      "avg_actual": 31.833839285714287
+    },
+    {
+      "player_name": "Lonnie Walker IV",
+      "avg_mae": 7.076499048032259,
+      "avg_actual": 11.447368421052632
+    },
+    {
+      "player_name": "Devin Booker",
+      "avg_mae": 7.073341243064481,
+      "avg_actual": 26.258676470588238
+    },
+    {
+      "player_name": "Donovan Mitchell",
+      "avg_mae": 7.0697589023107,
+      "avg_actual": 26.14782025486251
+    },
+    {
+      "player_name": "Tyrese Maxey",
+      "avg_mae": 7.0694954599045445,
+      "avg_actual": 26.887028189202102
+    },
+    {
+      "player_name": "Jalen Brunson",
+      "avg_mae": 7.040939653614146,
+      "avg_actual": 27.04860123281176
+    },
+    {
+      "player_name": "Bradley Beal",
+      "avg_mae": 7.037984362188375,
+      "avg_actual": 17.60377358490566
+    }
+  ]
+}

@@ -32,6 +32,11 @@ MODEL_DIR = Path(__file__).parent.parent / "data" / "models"
 
 TARGETS = ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov"]
 
+_WIN_PROB_FEATURES = [
+    "is_home", "rest_days", "is_playoffs", "elo_diff",
+    "pts_last5_avg", "pts_last10_avg", "pts_diff_l5",
+]
+
 ROLL_STATS = ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov", "min", "fg_pct", "fg3_pct", "usg_pct"]
 
 XGB_PARAMS = dict(
@@ -330,6 +335,16 @@ def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame, positions: pd.Da
         grp["min"].transform(lambda x: x.shift(1).rolling(10, min_periods=3).std()).fillna(5.0)
     )
 
+    # Per-stat volatility — std of last 10 games for key stats.
+    # High-variance players (stars who explode or go quiet) should get wider CIs.
+    # Fills with 30% of the rolling mean when fewer than 3 games are available.
+    for stat in ["pts", "ast", "reb"]:
+        logs[f"{stat}_std_last10"] = (
+            grp[stat]
+            .transform(lambda x: x.shift(1).rolling(10, min_periods=3).std())
+            .fillna(logs[f"{stat}_last10"] * 0.30)
+        )
+
     # Rest days
     logs["rest_days"] = (
         grp["game_date"].transform(lambda x: x.diff().dt.days).fillna(3).clip(1, 14)
@@ -468,6 +483,7 @@ def _feature_cols() -> list[str]:
              "opp_ast_pg", "opp_reb_pg", "opp_fg3m_pg", "opp_blk_pg", "opp_stl_pg",
              "is_home", "rest_days"]
     cols += ["is_playoffs", "min_std_last10", "home_pts_avg", "away_pts_avg"]
+    cols += ["pts_std_last10", "ast_std_last10", "reb_std_last10"]
     cols += ["opp_pos_pts", "opp_pos_ast", "opp_pos_reb", "opp_pos_fg3m", "opp_pos_blk", "opp_pos_stl"]
     for stat in ["pts", "ast", "reb"]:
         cols += [f"{stat}_vs_opp_last3", f"{stat}_vs_opp_avg"]
@@ -482,7 +498,16 @@ def _feature_cols() -> list[str]:
 # ── Train / evaluate ──────────────────────────────────────────────────────────
 
 def train_models(df: pd.DataFrame) -> dict:
-    # Train on all seasons except last; test on most recent regular season
+    """
+    Train per-stat XGBoost models plus quantile (floor/ceiling) models and a
+    win-probability classifier.
+
+    Models produced:
+      model_{stat}.json          — mean prediction (reg:squarederror)
+      model_{stat}_q10.json      — 10th-percentile floor (reg:quantileerror)
+      model_{stat}_q90.json      — 90th-percentile ceiling (reg:quantileerror)
+      model_win_prob.json        — game-level win probability (binary classifier)
+    """
     seasons = sorted(df["season"].unique())
     test_season = seasons[-1]
     train = df[df["season"] != test_season]
@@ -497,26 +522,132 @@ def train_models(df: pd.DataFrame) -> dict:
     metrics: dict[str, dict] = {}
     models:  dict[str, xgb.XGBRegressor] = {}
 
+    # ── Per-stat: mean + q10 + q90 ───────────────────────────────────────────
+    q_params_10 = {**XGB_PARAMS, "objective": "reg:quantileerror", "quantile_alpha": 0.10}
+    q_params_90 = {**XGB_PARAMS, "objective": "reg:quantileerror", "quantile_alpha": 0.90}
+
     for target in TARGETS:
         y_train = train[target]
         y_test  = test[target]
 
+        # Mean model
         model = xgb.XGBRegressor(**XGB_PARAMS)
-        model.fit(
-            X_train, y_train,
-            eval_set=[(X_test, y_test)],
-            verbose=False,
-        )
-
+        model.fit(X_train, y_train, eval_set=[(X_test, y_test)], verbose=False)
         preds = model.predict(X_test).clip(0)
-        mae   = mean_absolute_error(y_test, preds)
-        rmse  = mean_squared_error(y_test, preds) ** 0.5
-
-        print(f"  {target:>5}  MAE={mae:.2f}  RMSE={rmse:.2f}")
+        mae  = mean_absolute_error(y_test, preds)
+        rmse = mean_squared_error(y_test, preds) ** 0.5
         metrics[target] = {"mae": round(mae, 3), "rmse": round(rmse, 3)}
         models[target] = model
 
+        # Floor model (q10)
+        m_q10 = xgb.XGBRegressor(**q_params_10)
+        m_q10.fit(X_train, y_train, verbose=False)
+        models[f"{target}_q10"] = m_q10
+
+        # Ceiling model (q90)
+        m_q90 = xgb.XGBRegressor(**q_params_90)
+        m_q90.fit(X_train, y_train, verbose=False)
+        models[f"{target}_q90"] = m_q90
+
+        # CI coverage on test set
+        floor_preds   = m_q10.predict(X_test).clip(0)
+        ceiling_preds = m_q90.predict(X_test).clip(0)
+        coverage = ((y_test.values >= floor_preds) & (y_test.values <= ceiling_preds)).mean() * 100
+
+        print(f"  {target:>5}  MAE={mae:.2f}  RMSE={rmse:.2f}  CI-coverage={coverage:.1f}%")
+
+    # ── Win probability classifier ────────────────────────────────────────────
+    print("\n  Training win-probability classifier...")
+    win_prob_model, win_metrics = _train_win_prob(train, test)
+    if win_prob_model is not None:
+        models["win_prob"] = win_prob_model
+        metrics["win_prob"] = win_metrics
+        print(f"  win_prob  accuracy={win_metrics.get('accuracy', 0):.1f}%  "
+              f"log-loss={win_metrics.get('log_loss', 0):.3f}")
+
     return models, metrics
+
+
+def _build_game_features(df: pd.DataFrame) -> pd.DataFrame:
+    """
+    Collapse player-game rows into one row per team-game for win-prob training.
+    Features: team/opp scoring diff, HCA, rest, ELO diff, is_playoffs.
+    Target: did this team win (1/0)?
+    """
+    # Aggregate per team-game
+    agg = (
+        df.groupby(["game_id", "team_abbreviation", "opponent_abbreviation",
+                    "game_date", "season", "season_type"])
+        .agg(
+            team_pts      = ("pts",       "sum"),
+            is_home       = ("is_home",   "max"),
+            rest_days     = ("rest_days", "max"),
+            is_playoffs   = ("is_playoffs", "max"),
+            team_elo      = ("team_elo",  "mean"),
+            opp_elo       = ("opp_elo",   "mean"),
+            pts_last5_avg = ("pts_last5", "mean"),
+            pts_last10_avg= ("pts_last10","mean"),
+        )
+        .reset_index()
+    )
+    # Merge opponent points to get game result
+    opp_pts = (
+        df.groupby(["game_id", "team_abbreviation"])["pts"]
+        .sum().reset_index()
+        .rename(columns={"team_abbreviation": "opponent_abbreviation", "pts": "opp_pts"})
+    )
+    agg = agg.merge(opp_pts, on=["game_id", "opponent_abbreviation"], how="left")
+    agg = agg.dropna(subset=["opp_pts"])
+    agg["won"] = (agg["team_pts"] > agg["opp_pts"]).astype(int)
+    agg["elo_diff"]    = agg["team_elo"] - agg["opp_elo"]
+    agg["pts_diff_l5"] = agg["pts_last5_avg"] - agg.groupby("game_id")["pts_last5_avg"].transform("mean")
+    return agg
+
+
+_WIN_PROB_FEATURES = [
+    "is_home", "rest_days", "is_playoffs", "elo_diff",
+    "pts_last5_avg", "pts_last10_avg", "pts_diff_l5",
+]
+
+
+def _train_win_prob(train: pd.DataFrame, test: pd.DataFrame):
+    """Train a binary win-probability XGBoost classifier at the team-game level."""
+    try:
+        from sklearn.metrics import accuracy_score, log_loss as sk_log_loss
+
+        train_g = _build_game_features(train)
+        test_g  = _build_game_features(test)
+
+        feat = [f for f in _WIN_PROB_FEATURES if f in train_g.columns]
+        X_tr = train_g[feat].fillna(0)
+        y_tr = train_g["won"]
+        X_te = test_g[feat].fillna(0)
+        y_te = test_g["won"]
+
+        wp_params = {
+            **XGB_PARAMS,
+            "objective": "binary:logistic",
+            "eval_metric": "logloss",
+        }
+        wp_params.pop("random_state", None)
+        wp_params["seed"] = 42
+
+        model = xgb.XGBClassifier(**wp_params)
+        model.fit(X_tr, y_tr, eval_set=[(X_te, y_te)], verbose=False)
+
+        probs = model.predict_proba(X_te)[:, 1]
+        preds = (probs >= 0.5).astype(int)
+        acc   = accuracy_score(y_te, preds) * 100
+        ll    = sk_log_loss(y_te, probs)
+
+        # Save feature list alongside model
+        model._win_prob_features = feat
+
+        return model, {"accuracy": round(acc, 1), "log_loss": round(ll, 3),
+                       "features": feat}
+    except Exception as e:
+        print(f"  Win-prob training failed: {e}")
+        return None, {}
 
 
 # ── Save ──────────────────────────────────────────────────────────────────────
@@ -524,8 +655,15 @@ def train_models(df: pd.DataFrame) -> dict:
 def save_models(models: dict, metrics: dict) -> None:
     MODEL_DIR.mkdir(parents=True, exist_ok=True)
 
-    for target, model in models.items():
-        model.save_model(str(MODEL_DIR / f"model_{target}.json"))
+    for key, model in models.items():
+        if key == "win_prob":
+            model.save_model(str(MODEL_DIR / "model_win_prob.json"))
+            # Save win-prob feature list separately
+            with open(MODEL_DIR / "win_prob_features.json", "w") as f:
+                json.dump(getattr(model, "_win_prob_features", _WIN_PROB_FEATURES), f)
+        else:
+            # key is either "pts" or "pts_q10" / "pts_q90"
+            model.save_model(str(MODEL_DIR / f"model_{key}.json"))
 
     with open(MODEL_DIR / "metrics.json", "w") as f:
         json.dump(metrics, f, indent=2)
@@ -550,9 +688,12 @@ def main() -> None:
 
     save_models(models, metrics)
 
-    print("\n══ Metrics (2024-25 Regular Season test set) ══")
+    print("\n══ Metrics (2025-26 Regular Season test set) ══")
     for stat, m in metrics.items():
-        print(f"  {stat:>5}  MAE={m['mae']}  RMSE={m['rmse']}")
+        if "mae" in m:
+            print(f"  {stat:>5}  MAE={m['mae']}  RMSE={m['rmse']}")
+        else:
+            print(f"  {stat:>5}  " + "  ".join(f"{k}={v}" for k, v in m.items() if k != "features"))
 
 
 if __name__ == "__main__":

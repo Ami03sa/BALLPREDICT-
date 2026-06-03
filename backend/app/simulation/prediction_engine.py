@@ -22,6 +22,8 @@ def _load_models() -> dict | None:
     try:
         import xgboost as xgb
         models: dict = {}
+
+        # Mean models (one per stat)
         for t in _TARGETS:
             path = _MODEL_DIR / f"model_{t}.json"
             if not path.exists():
@@ -29,6 +31,28 @@ def _load_models() -> dict | None:
             m = xgb.XGBRegressor()
             m.load_model(str(path))
             models[t] = m
+
+        # Quantile models — q10 (floor) and q90 (ceiling) for each stat.
+        # Trained with reg:quantileerror so CIs are statistically grounded.
+        for t in _TARGETS:
+            for q in ("q10", "q90"):
+                path = _MODEL_DIR / f"model_{t}_{q}.json"
+                if path.exists():
+                    mq = xgb.XGBRegressor()
+                    mq.load_model(str(path))
+                    models[f"{t}_{q}"] = mq
+
+        # Win-probability classifier
+        wp_path = _MODEL_DIR / "model_win_prob.json"
+        if wp_path.exists():
+            wp = xgb.XGBClassifier()
+            wp.load_model(str(wp_path))
+            models["_win_prob"] = wp
+            wp_feat_path = _MODEL_DIR / "win_prob_features.json"
+            if wp_feat_path.exists():
+                with open(wp_feat_path) as f:
+                    models["_win_prob_features"] = json.load(f)
+
         with open(_MODEL_DIR / "features.json") as f:
             models["_features"] = json.load(f)
         return models
@@ -516,6 +540,18 @@ def _build_features(
     min_vals = history.get("min", [])
     row["min_std_last10"] = float(np.std(min_vals)) if len(min_vals) >= 3 else 5.0
 
+    # Per-stat volatility — std of last 10 games.
+    # High-variance players (stars who explode or go quiet) get naturally wider CIs
+    # from the q10/q90 quantile models when this feature is present.
+    for stat in ["pts", "ast", "reb"]:
+        vals = history.get(stat, [])
+        recent = vals[:10]
+        if len(recent) >= 3:
+            row[f"{stat}_std_last10"] = float(np.std(recent))
+        else:
+            # Fallback: 30% of rolling mean as estimated dispersion
+            row[f"{stat}_std_last10"] = row.get(f"{stat}_last10", 0.0) * 0.30
+
     row["opp_pts_per_game"] = opp_def.get("opp_pts_per_game", 12.0)
     row["opp_fg_pct"]       = opp_def.get("opp_fg_pct", 0.46)
     row["opp_fg3_pct"]      = opp_def.get("opp_fg3_pct", 0.36)
@@ -657,9 +693,11 @@ def _load_team_elo() -> dict[str, float]:
 
 def _xgb_predict(player: PlayerGameState, opponent_id: str, is_home: bool, is_playoffs: bool = False) -> dict[str, dict] | None:
     """
-    Run each XGBoost model _N_RUNS times with perturbed features and return
-    the mean and std of predictions. Adding noise to rolling stats and opponent
-    defense captures real game-to-game variance and gives data-driven CI.
+    Run the XGBoost mean model plus q10/q90 quantile models for each stat.
+
+    Returns per-stat dicts with keys: mean, floor (q10), ceiling (q90).
+    The quantile models were trained with reg:quantileerror and produce
+    statistically grounded CI bands — ~80% of actuals should fall inside.
     """
     if _MODELS is None:
         return None
@@ -677,23 +715,30 @@ def _xgb_predict(player: PlayerGameState, opponent_id: str, is_home: bool, is_pl
     feat_row = _build_features(player, history, opp_def, is_home, h2h, is_playoffs, splits, team_elo, opp_elo, series)
     feature_cols = _MODELS["_features"]
 
-    base_X = np.array([feat_row.get(c, 0.0) for c in feature_cols])
-
-    # Build noise matrix: shape (N_RUNS, n_features)
-    noise = np.zeros((_N_RUNS, len(feature_cols)))
-    for i, col in enumerate(feature_cols):
-        scale = _NOISE_SCALES.get(col, 0.0)
-        if scale > 0:
-            noise[:, i] = np.random.normal(0, scale, _N_RUNS)
-
-    X_batch = np.clip(np.tile(base_X, (_N_RUNS, 1)) + noise, 0, None)
+    X = np.array([feat_row.get(c, 0.0) for c in feature_cols]).reshape(1, -1)
 
     results: dict[str, dict] = {}
     for t in _TARGETS:
-        preds = np.clip(_MODELS[t].predict(X_batch), 0, None)
+        mean_pred = float(np.clip(_MODELS[t].predict(X), 0, None)[0])
+
+        # Use quantile models if available, else fall back to std-based estimate
+        q10_key = f"{t}_q10"
+        q90_key = f"{t}_q90"
+        if q10_key in _MODELS and q90_key in _MODELS:
+            floor_pred   = float(np.clip(_MODELS[q10_key].predict(X), 0, None)[0])
+            ceiling_pred = float(np.clip(_MODELS[q90_key].predict(X), 0, None)[0])
+            # Ensure floor ≤ mean ≤ ceiling (quantile crossing can occur)
+            floor_pred   = min(floor_pred, mean_pred)
+            ceiling_pred = max(ceiling_pred, mean_pred)
+        else:
+            # Fallback: symmetric ±30% band
+            floor_pred   = mean_pred * 0.70
+            ceiling_pred = mean_pred * 1.30
+
         results[t] = {
-            "mean": float(np.mean(preds)),
-            "std":  float(np.std(preds)),
+            "mean":    mean_pred,
+            "floor":   floor_pred,
+            "ceiling": ceiling_pred,
         }
 
     # Playoff series override: blend XGBoost output with actual series averages
@@ -755,7 +800,6 @@ class PredictionEngine:
         preds = _xgb_predict(player, defense.team_id, is_home, is_playoffs)
 
         if preds is not None:
-            # Use ensemble mean — more robust than a single run.
             proj_pts  = round(preds["pts"]["mean"],  1)
             proj_ast  = round(preds["ast"]["mean"],  1)
             proj_reb  = round(preds["reb"]["mean"],  1)
@@ -781,12 +825,11 @@ class PredictionEngine:
                     elif stat_key == "fg3m":
                         proj_fg3m = blended
 
-            # Confidence band driven by prediction std — no manual multipliers needed.
-            pts_std = preds["pts"]["std"]
-            ast_std = preds["ast"]["std"]
-            reb_std = preds["reb"]["std"]
-            tov_std = preds["tov"]["std"]
-            spread  = pts_std  # kept for hot_factor ceiling calculation
+            # Quantile CI bands — statistically grounded floor (q10) and ceiling (q90).
+            # Hot players stretch the ceiling further; cold players widen the floor.
+            pts_floor   = preds["pts"]["floor"]
+            pts_ceiling = preds["pts"]["ceiling"]
+            spread      = pts_ceiling - pts_floor  # kept for legacy hot_factor scaling
         else:
             # XGBoost unavailable — season average is the full-game prediction.
             proj_pts  = round(player.pts_avg,  1) if player.pts_avg  > 0 else 0.0
@@ -806,23 +849,43 @@ class PredictionEngine:
             field_goal_pct=round(max(0.33, min(0.68, player.field_goal_pct)), 3),
             three_point_pct=round(max(0.25, min(0.55, player.three_point_pct)), 3),
         )
-        # Floor/ceiling from ensemble std — data-driven, no manual multipliers.
-        # Hot players widen the ceiling further; cold players widen the floor.
+        # Floor/ceiling from quantile regression (q10/q90) — statistically grounded.
+        # Hot-factor nudges the ceiling further up; cold nudges floor further down.
         ceiling_mult = 1.0 + (hot - 1.0) * 1.8
         floor_mult   = 1.0 - (hot - 1.0) * 0.4
 
         if preds is not None:
+            # Apply hot/cold scaling symmetrically around the mean
+            raw_pts_floor   = preds["pts"]["floor"]
+            raw_pts_ceiling = preds["pts"]["ceiling"]
+            raw_ast_floor   = preds["ast"]["floor"]
+            raw_ast_ceiling = preds["ast"]["ceiling"]
+            raw_reb_floor   = preds["reb"]["floor"]
+            raw_reb_ceiling = preds["reb"]["ceiling"]
+            raw_tov_floor   = preds["tov"]["floor"]
+            raw_tov_ceiling = preds["tov"]["ceiling"]
+
+            # Stretch floor/ceiling by hot factor: hot players push ceiling higher,
+            # cold players push floor lower — but mean stays pinned.
+            def _scale_floor(mean_val: float, q_floor: float, mult: float) -> float:
+                gap = mean_val - q_floor
+                return max(0.0, mean_val - gap * mult)
+
+            def _scale_ceiling(mean_val: float, q_ceiling: float, mult: float) -> float:
+                gap = q_ceiling - mean_val
+                return mean_val + gap * mult
+
             low_line = mean_line.model_copy(update={
-                "points":    round(max(0, proj_pts - pts_std * 1.5 * floor_mult), 1),
-                "assists":   round(max(0, proj_ast - ast_std * 1.5 * floor_mult), 1),
-                "rebounds":  round(max(0, proj_reb - reb_std * 1.5 * floor_mult), 1),
-                "turnovers": round(max(0, proj_tov - tov_std * 1.0), 1),
+                "points":    round(_scale_floor(proj_pts,  raw_pts_floor,   floor_mult),   1),
+                "assists":   round(_scale_floor(proj_ast,  raw_ast_floor,   floor_mult),   1),
+                "rebounds":  round(_scale_floor(proj_reb,  raw_reb_floor,   floor_mult),   1),
+                "turnovers": round(_scale_floor(proj_tov,  raw_tov_floor,   1.0),          1),
             })
             high_line = mean_line.model_copy(update={
-                "points":    round(proj_pts + pts_std * 2.0 * ceiling_mult, 1),
-                "assists":   round(proj_ast + ast_std * 2.0 * ceiling_mult, 1),
-                "rebounds":  round(proj_reb + reb_std * 2.0 * ceiling_mult, 1),
-                "turnovers": round(proj_tov + tov_std * 1.0, 1),
+                "points":    round(_scale_ceiling(proj_pts,  raw_pts_ceiling,   ceiling_mult), 1),
+                "assists":   round(_scale_ceiling(proj_ast,  raw_ast_ceiling,   ceiling_mult), 1),
+                "rebounds":  round(_scale_ceiling(proj_reb,  raw_reb_ceiling,   ceiling_mult), 1),
+                "turnovers": round(_scale_ceiling(proj_tov,  raw_tov_ceiling,   1.0),          1),
             })
         else:
             # Fallback: manual band when XGBoost unavailable
@@ -876,14 +939,45 @@ class PredictionEngine:
         final_mean = player_score_sum if player_score_sum > 0 else team.score
         spread = max(4, int(final_mean * 0.10))
 
-        # Derive win probability from projected score margin so it's consistent
-        # with what the player model says. Logistic curve: σ(margin / 10).
+        # Win probability: blend XGBoost classifier (pre-game context features)
+        # with logistic formula (projected score margin). Formula dominates live games
+        # because actual score margin is the strongest real-time signal.
         if player_score_sum > 0 and opponent_score_sum > 0:
             score_margin = player_score_sum - opponent_score_sum if is_home else opponent_score_sum - player_score_sum
         else:
             score_margin = context.score_margin
-        win_prob = 1 / (1 + math.exp(-(score_margin / 10.0)))
-        team_win_prob = win_prob if is_home else 1 - win_prob
+        formula_prob = 1 / (1 + math.exp(-(score_margin / 10.0)))
+        formula_win_prob = formula_prob if is_home else 1 - formula_prob
+
+        classifier_win_prob: float | None = None
+        wp_model = _MODELS.get("_win_prob")
+        wp_features: list[str] = _MODELS.get("_win_prob_features", [])  # type: ignore[assignment]
+        if wp_model is not None and wp_features:
+            try:
+                # Build feature vector — use team ratings as proxies for missing history
+                rest_days = 0 if context.back_to_back else 2
+                elo_diff  = (team.offensive_rating - opponent.offensive_rating) * 2.5  # rough proxy
+                feat_map  = {
+                    "is_home":       float(is_home),
+                    "rest_days":     float(rest_days),
+                    "is_playoffs":   float(context.playoff_intensity >= 0.65),
+                    "elo_diff":      elo_diff if is_home else -elo_diff,
+                    "pts_last5_avg":  team.offensive_rating,
+                    "pts_last10_avg": team.offensive_rating,
+                    "pts_diff_l5":    team.offensive_rating - opponent.defensive_rating,
+                }
+                X_wp = np.array([[feat_map.get(f, 0.0) for f in wp_features]])
+                prob = float(wp_model.predict_proba(X_wp)[0][1])
+                classifier_win_prob = prob if is_home else 1 - prob
+            except Exception:
+                pass  # fall through to formula-only
+
+        if classifier_win_prob is not None:
+            # Pre-game: 50/50 blend; live game: weight formula higher (margin known)
+            clf_weight = 0.35 if context.quarter == 0 else 0.15
+            team_win_prob = clf_weight * classifier_win_prob + (1 - clf_weight) * formula_win_prob
+        else:
+            team_win_prob = formula_win_prob
 
         # Build per-quarter score breakdown.
         q = context.quarter

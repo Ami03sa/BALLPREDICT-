@@ -1,15 +1,15 @@
 {
   "pts": {
-    "mae": 4.677,
-    "rmse": 6.061
+    "mae": 4.679,
+    "rmse": 6.064
   },
   "ast": {
-    "mae": 1.381,
-    "rmse": 1.853
+    "mae": 1.382,
+    "rmse": 1.854
   },
   "reb": {
     "mae": 1.903,
-    "rmse": 2.492
+    "rmse": 2.493
   },
   "stl": {
     "mae": 0.751,
@@ -24,7 +24,20 @@
     "rmse": 1.258
   },
   "tov": {
-    "mae": 0.917,
-    "rmse": 1.191
+    "mae": 0.918,
+    "rmse": 1.193
+  },
+  "win_prob": {
+    "accuracy": 69.0,
+    "log_loss": 0.581,
+    "features": [
+      "is_home",
+      "rest_days",
+      "is_playoffs",
+      "elo_diff",
+      "pts_last5_avg",
+      "pts_last10_avg",
+      "pts_diff_l5"
+    ]
   }
 }
