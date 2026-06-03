@@ -7,39 +7,39 @@
         "2022-23"
       ],
       "pts": {
-        "mae": 4.723,
-        "rmse": 6.076
+        "mae": 4.679,
+        "rmse": 6.038
       },
       "ast": {
-        "mae": 1.403,
-        "rmse": 1.881
+        "mae": 1.392,
+        "rmse": 1.87
       },
       "reb": {
-        "mae": 1.929,
-        "rmse": 2.526
+        "mae": 1.916,
+        "rmse": 2.511
       },
       "stl": {
-        "mae": 0.711,
-        "rmse": 0.906
+        "mae": 0.71,
+        "rmse": 0.905
       },
       "blk": {
-        "mae": 0.571,
-        "rmse": 0.782
+        "mae": 0.566,
+        "rmse": 0.777
       },
       "fg3m": {
-        "mae": 0.91,
-        "rmse": 1.247
+        "mae": 0.902,
+        "rmse": 1.238
       },
       "tov": {
-        "mae": 0.921,
-        "rmse": 1.181
+        "mae": 0.915,
+        "rmse": 1.174
       },
-      "score_mae": 13.49,
-      "score_rmse": 17.32,
-      "win_accuracy": 59.1,
+      "score_mae": 13.13,
+      "score_rmse": 16.93,
+      "win_accuracy": 57.4,
       "pts_ci_coverage": 38.7,
       "naive_pts_mae": 5.398,
-      "model_lift_pts": 0.675
+      "model_lift_pts": 0.719
     },
     {
       "test_season": "2024-25",
@@ -49,39 +49,39 @@
         "2023-24"
       ],
       "pts": {
-        "mae": 4.749,
-        "rmse": 6.121
+        "mae": 4.72,
+        "rmse": 6.095
       },
       "ast": {
-        "mae": 1.394,
-        "rmse": 1.862
+        "mae": 1.382,
+        "rmse": 1.85
       },
       "reb": {
-        "mae": 1.954,
-        "rmse": 2.556
+        "mae": 1.947,
+        "rmse": 2.548
       },
       "stl": {
-        "mae": 0.749,
-        "rmse": 0.952
+        "mae": 0.747,
+        "rmse": 0.951
       },
       "blk": {
-        "mae": 0.544,
-        "rmse": 0.744
+        "mae": 0.543,
+        "rmse": 0.743
       },
       "fg3m": {
-        "mae": 0.944,
-        "rmse": 1.285
+        "mae": 0.94,
+        "rmse": 1.28
       },
       "tov": {
-        "mae": 0.917,
-        "rmse": 1.199
+        "mae": 0.916,
+        "rmse": 1.197
       },
-      "score_mae": 14.28,
-      "score_rmse": 18.3,
-      "win_accuracy": 57.1,
-      "pts_ci_coverage": 37.5,
+      "score_mae": 13.98,
+      "score_rmse": 17.88,
+      "win_accuracy": 57.2,
+      "pts_ci_coverage": 37.4,
       "naive_pts_mae": 5.441,
-      "model_lift_pts": 0.692
+      "model_lift_pts": 0.721
     },
     {
       "test_season": "2025-26",
@@ -92,54 +92,54 @@
         "2024-25"
       ],
       "pts": {
-        "mae": 4.682,
-        "rmse": 6.065
+        "mae": 4.653,
+        "rmse": 6.032
       },
       "ast": {
-        "mae": 1.383,
-        "rmse": 1.855
+        "mae": 1.374,
+        "rmse": 1.844
       },
       "reb": {
-        "mae": 1.904,
-        "rmse": 2.492
+        "mae": 1.895,
+        "rmse": 2.482
       },
       "stl": {
-        "mae": 0.751,
-        "rmse": 0.956
+        "mae": 0.749,
+        "rmse": 0.953
       },
       "blk": {
         "mae": 0.536,
-        "rmse": 0.736
+        "rmse": 0.735
       },
       "fg3m": {
-        "mae": 0.926,
-        "rmse": 1.26
+        "mae": 0.922,
+        "rmse": 1.256
       },
       "tov": {
-        "mae": 0.918,
-        "rmse": 1.193
+        "mae": 0.916,
+        "rmse": 1.191
       },
-      "score_mae": 13.77,
-      "score_rmse": 17.63,
-      "win_accuracy": 61.2,
-      "pts_ci_coverage": 37.6,
+      "score_mae": 13.58,
+      "score_rmse": 17.48,
+      "win_accuracy": 60.7,
+      "pts_ci_coverage": 37.9,
       "naive_pts_mae": 5.621,
-      "model_lift_pts": 0.939
+      "model_lift_pts": 0.968
     }
   ],
   "averages": {
     "Season": "AVG",
-    "pts_MAE": 4.718,
-    "ast_MAE": 1.393,
-    "reb_MAE": 1.929,
-    "stl_MAE": 0.737,
-    "blk_MAE": 0.55,
-    "fg3m_MAE": 0.927,
-    "tov_MAE": 0.919,
-    "Win%": 59.1,
-    "Score_MAE": 13.85,
-    "CI_cov%": 37.9,
-    "Lift": 0.769
+    "pts_MAE": 4.684,
+    "ast_MAE": 1.383,
+    "reb_MAE": 1.919,
+    "stl_MAE": 0.735,
+    "blk_MAE": 0.548,
+    "fg3m_MAE": 0.921,
+    "tov_MAE": 0.916,
+    "Win%": 58.4,
+    "Score_MAE": 13.56,
+    "CI_cov%": 38.0,
+    "Lift": 0.803
   },
   "worst_predictions": [
     {
@@ -149,8 +149,8 @@
       "opponent_abbreviation": "WAS",
       "game_date": "2026-03-10 00:00:00",
       "pts": 83.0,
-      "pred_pts": 22.529611587524414,
-      "error": 60.470388412475586
+      "pred_pts": 22.856870651245117,
+      "error": 60.14312934875488
     },
     {
       "season": "2023-24",
@@ -159,18 +159,8 @@
       "opponent_abbreviation": "ATL",
       "game_date": "2024-04-03 00:00:00",
       "pts": 50.0,
-      "pred_pts": 9.038918495178223,
-      "error": 40.96108150482178
-    },
-    {
-      "season": "2023-24",
-      "player_name": "Karl-Anthony Towns",
-      "team_abbreviation": "MIN",
-      "opponent_abbreviation": "CHA",
-      "game_date": "2024-01-22 00:00:00",
-      "pts": 62.0,
-      "pred_pts": 21.462589263916016,
-      "error": 40.537410736083984
+      "pred_pts": 8.8143949508667,
+      "error": 41.1856050491333
     },
     {
       "season": "2023-24",
@@ -179,8 +169,18 @@
       "opponent_abbreviation": "ATL",
       "game_date": "2024-01-26 00:00:00",
       "pts": 73.0,
-      "pred_pts": 33.980594635009766,
-      "error": 39.019405364990234
+      "pred_pts": 32.24513244628906,
+      "error": 40.75486755371094
+    },
+    {
+      "season": "2023-24",
+      "player_name": "Karl-Anthony Towns",
+      "team_abbreviation": "MIN",
+      "opponent_abbreviation": "CHA",
+      "game_date": "2024-01-22 00:00:00",
+      "pts": 62.0,
+      "pred_pts": 21.40432357788086,
+      "error": 40.59567642211914
     },
     {
       "season": "2023-24",
@@ -189,8 +189,8 @@
       "opponent_abbreviation": "SAS",
       "game_date": "2024-01-22 00:00:00",
       "pts": 70.0,
-      "pred_pts": 31.911376953125,
-      "error": 38.088623046875
+      "pred_pts": 31.653079986572266,
+      "error": 38.346920013427734
     },
     {
       "season": "2024-25",
@@ -199,8 +199,8 @@
       "opponent_abbreviation": "DET",
       "game_date": "2025-04-13 00:00:00",
       "pts": 43.0,
-      "pred_pts": 5.611363410949707,
-      "error": 37.38863658905029
+      "pred_pts": 5.238831043243408,
+      "error": 37.76116895675659
     },
     {
       "season": "2025-26",
@@ -209,8 +209,8 @@
       "opponent_abbreviation": "GSW",
       "game_date": "2025-10-23 00:00:00",
       "pts": 50.0,
-      "pred_pts": 13.607919692993164,
-      "error": 36.392080307006836
+      "pred_pts": 13.033422470092773,
+      "error": 36.96657752990723
     },
     {
       "season": "2024-25",
@@ -219,8 +219,8 @@
       "opponent_abbreviation": "MIN",
       "game_date": "2024-11-15 00:00:00",
       "pts": 60.0,
-      "pred_pts": 24.443805694580078,
-      "error": 35.55619430541992
+      "pred_pts": 24.380779266357422,
+      "error": 35.61922073364258
     },
     {
       "season": "2023-24",
@@ -229,8 +229,8 @@
       "opponent_abbreviation": "SAS",
       "game_date": "2024-03-29 00:00:00",
       "pts": 61.0,
-      "pred_pts": 25.614166259765625,
-      "error": 35.385833740234375
+      "pred_pts": 26.067930221557617,
+      "error": 34.93206977844238
     },
     {
       "season": "2024-25",
@@ -239,85 +239,80 @@
       "opponent_abbreviation": "POR",
       "game_date": "2025-02-12 00:00:00",
       "pts": 55.0,
-      "pred_pts": 20.37846565246582,
-      "error": 34.62153434753418
+      "pred_pts": 20.27605628967285,
+      "error": 34.72394371032715
     }
   ],
   "hard_players": [
     {
-      "player_name": "Kennedy Chandler",
-      "avg_mae": 7.87200700153004,
-      "avg_actual": 15.0
-    },
-    {
       "player_name": "Stephen Curry",
-      "avg_mae": 7.815615312534564,
+      "avg_mae": 7.873735714490604,
       "avg_actual": 25.864779064779068
     },
     {
-      "player_name": "Zach LaVine",
-      "avg_mae": 7.579587279989693,
-      "avg_actual": 20.65226149226149
-    },
-    {
-      "player_name": "Anthony Edwards",
-      "avg_mae": 7.495812523154796,
-      "avg_actual": 27.67539759818241
+      "player_name": "Kennedy Chandler",
+      "avg_mae": 7.767975221980702,
+      "avg_actual": 15.0
     },
     {
       "player_name": "Anthony Davis",
-      "avg_mae": 7.4162434267595865,
+      "avg_mae": 7.510643834742969,
       "avg_actual": 23.25323357413141
     },
     {
+      "player_name": "Anthony Edwards",
+      "avg_mae": 7.495182017099673,
+      "avg_actual": 27.67539759818241
+    },
+    {
+      "player_name": "Zach LaVine",
+      "avg_mae": 7.438598261705638,
+      "avg_actual": 20.65226149226149
+    },
+    {
       "player_name": "Trae Young",
-      "avg_mae": 7.4042275704525755,
+      "avg_mae": 7.347769891541836,
       "avg_actual": 22.62641325536062
     },
     {
       "player_name": "Cam Thomas",
-      "avg_mae": 7.33130827861691,
+      "avg_mae": 7.194004556736238,
       "avg_actual": 20.081271249076128
     },
     {
-      "player_name": "Joel Embiid",
-      "avg_mae": 7.086461049181569,
-      "avg_actual": 28.450067476383268
-    },
-    {
-      "player_name": "Luka Don\u010di\u0107",
-      "avg_mae": 7.078176567895071,
-      "avg_actual": 31.833839285714287
-    },
-    {
-      "player_name": "Lonnie Walker IV",
-      "avg_mae": 7.076499048032259,
-      "avg_actual": 11.447368421052632
-    },
-    {
       "player_name": "Devin Booker",
-      "avg_mae": 7.073341243064481,
+      "avg_mae": 7.1829788462632616,
       "avg_actual": 26.258676470588238
     },
     {
-      "player_name": "Donovan Mitchell",
-      "avg_mae": 7.0697589023107,
-      "avg_actual": 26.14782025486251
+      "player_name": "Cooper Flagg",
+      "avg_mae": 7.0907438222099755,
+      "avg_actual": 21.36764705882353
+    },
+    {
+      "player_name": "Luka Don\u010di\u0107",
+      "avg_mae": 7.05286442058427,
+      "avg_actual": 31.833839285714287
     },
     {
       "player_name": "Tyrese Maxey",
-      "avg_mae": 7.0694954599045445,
+      "avg_mae": 7.045585071389358,
       "avg_actual": 26.887028189202102
     },
     {
-      "player_name": "Jalen Brunson",
-      "avg_mae": 7.040939653614146,
-      "avg_actual": 27.04860123281176
+      "player_name": "Anfernee Simons",
+      "avg_mae": 7.0420402196758145,
+      "avg_actual": 18.705608883869754
     },
     {
-      "player_name": "Bradley Beal",
-      "avg_mae": 7.037984362188375,
-      "avg_actual": 17.60377358490566
+      "player_name": "Donovan Mitchell",
+      "avg_mae": 7.040522317215914,
+      "avg_actual": 26.14782025486251
+    },
+    {
+      "player_name": "Lonnie Walker IV",
+      "avg_mae": 7.039666184207849,
+      "avg_actual": 11.447368421052632
     }
   ]
 }
