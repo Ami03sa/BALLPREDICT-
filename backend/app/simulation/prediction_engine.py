@@ -939,29 +939,31 @@ class PredictionEngine:
         final_mean = player_score_sum if player_score_sum > 0 else team.score
         spread = max(4, int(final_mean * 0.10))
 
-        # Win probability: blend XGBoost classifier (pre-game context features)
-        # with logistic formula (projected score margin). Formula dominates live games
-        # because actual score margin is the strongest real-time signal.
+        # Win probability — always pre-game, never uses live score.
+        # Two signals, equal weight:
+        #   1. XGBoost classifier trained on pre-game context (HCA, rest, ratings, ELO)
+        #   2. Logistic formula over the PROJECTED score margin from player projections
+        # Neither signal touches actual live scores or quarter data.
         if player_score_sum > 0 and opponent_score_sum > 0:
-            score_margin = player_score_sum - opponent_score_sum if is_home else opponent_score_sum - player_score_sum
+            proj_margin = player_score_sum - opponent_score_sum if is_home else opponent_score_sum - player_score_sum
         else:
-            score_margin = context.score_margin
-        formula_prob = 1 / (1 + math.exp(-(score_margin / 10.0)))
+            proj_margin = 0  # no projections yet — neutral, let classifier carry it
+        formula_prob     = 1 / (1 + math.exp(-(proj_margin / 10.0)))
         formula_win_prob = formula_prob if is_home else 1 - formula_prob
 
         classifier_win_prob: float | None = None
-        wp_model = _MODELS.get("_win_prob")
+        wp_model    = _MODELS.get("_win_prob")
         wp_features: list[str] = _MODELS.get("_win_prob_features", [])  # type: ignore[assignment]
         if wp_model is not None and wp_features:
             try:
-                # Build feature vector — use team ratings as proxies for missing history
+                # Pre-game feature vector — use team season ratings as proxies
                 rest_days = 0 if context.back_to_back else 2
-                elo_diff  = (team.offensive_rating - opponent.offensive_rating) * 2.5  # rough proxy
+                elo_diff  = (team.offensive_rating - opponent.offensive_rating) * 2.5
                 feat_map  = {
-                    "is_home":       float(is_home),
-                    "rest_days":     float(rest_days),
-                    "is_playoffs":   float(context.playoff_intensity >= 0.65),
-                    "elo_diff":      elo_diff if is_home else -elo_diff,
+                    "is_home":        float(is_home),
+                    "rest_days":      float(rest_days),
+                    "is_playoffs":    float(context.playoff_intensity >= 0.65),
+                    "elo_diff":       elo_diff if is_home else -elo_diff,
                     "pts_last5_avg":  team.offensive_rating,
                     "pts_last10_avg": team.offensive_rating,
                     "pts_diff_l5":    team.offensive_rating - opponent.defensive_rating,
@@ -973,9 +975,8 @@ class PredictionEngine:
                 pass  # fall through to formula-only
 
         if classifier_win_prob is not None:
-            # Pre-game: 50/50 blend; live game: weight formula higher (margin known)
-            clf_weight = 0.35 if context.quarter == 0 else 0.15
-            team_win_prob = clf_weight * classifier_win_prob + (1 - clf_weight) * formula_win_prob
+            # 50/50 blend — both signals are pre-game, neither is live
+            team_win_prob = 0.50 * classifier_win_prob + 0.50 * formula_win_prob
         else:
             team_win_prob = formula_win_prob
 
