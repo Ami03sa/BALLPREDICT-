@@ -563,6 +563,50 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
             _apply_injury_report(home_team, injury_report)
             _apply_injury_report(away_team, injury_report)
 
+        # ── ESPN real-time injury + lineup supplement ─────────────────────────
+        # Runs after NBA stats API injury report — catches players that the NBA
+        # stats endpoint misses (e.g. newly added IR entries, game-day scratches).
+        # Also pulls confirmed starters when lineups are posted (~60 min pre-tip).
+        try:
+            from app.services.injury_lineup_service import (
+                get_injury_statuses,
+                get_confirmed_starters,
+                _OUT_STATUSES,
+                _RISKY_STATUSES,
+            )
+            espn_injuries = get_injury_statuses(game_id, home_tc, away_tc)
+
+            # Apply ESPN injuries to both rosters
+            for team_state in (home_team, away_team):
+                for player in team_state.players:
+                    if player.availability_status == "dnp":
+                        continue   # already marked — don't downgrade
+                    inj = espn_injuries.get(player.player_id)
+                    if inj is None:
+                        continue
+                    if inj.confirmed_dnp:
+                        player.availability_status = "dnp"
+                        player.dnp_reason = inj.display_reason
+                    elif inj.status in _RISKY_STATUSES and player.dnp_reason is None:
+                        # Not confirmed out — flag the uncertainty in dnp_reason
+                        # but keep availability_status as "available"
+                        player.dnp_reason = f"⚠ {inj.display_reason}"
+
+            # Apply confirmed starters — upgrade rotation_role if ESPN says starter
+            starters = get_confirmed_starters(game_id)
+            if starters:
+                for team_state in (home_team, away_team):
+                    for player in team_state.players:
+                        if player.player_id in starters:
+                            confirmed = starters[player.player_id]
+                            if confirmed and player.rotation_role not in ("star",):
+                                player.rotation_role = "starter"
+                            elif not confirmed and player.rotation_role == "starter":
+                                player.rotation_role = "rotation"
+                logger.info("Confirmed starters applied for %s: %d players", game_id, len(starters))
+        except Exception as espn_exc:
+            logger.debug("ESPN injury/lineup supplement skipped: %s", espn_exc)
+
         # Derive differentiated home/away implied totals from over/under + spread.
         # Formula: home_implied = (total - home_spread) / 2
         #          away_implied = (total + home_spread) / 2

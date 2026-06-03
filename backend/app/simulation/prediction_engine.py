@@ -530,6 +530,28 @@ def _build_features(
         row[f"{stat}_last10"]     = _rolling(vals, 10)
         row[f"{stat}_season_avg"] = float(np.mean(vals)) if vals else 0.0
 
+        # Exponentially weighted moving averages — recent games weighted more heavily.
+        # ewm3 captures immediate streak, ewm7 medium form, ewm15 season arc.
+        # Mirrors the same EWM computed in train_model.py (span, adjust=False, shift(1)).
+        if vals:
+            arr = np.array(vals[:15], dtype=float)  # enough history for ewm15
+            # Compute recursive EWM: w_i = (1-alpha)^i, alpha = 2/(span+1)
+            def _ewm(v: np.ndarray, span: int) -> float:
+                if len(v) == 0:
+                    return 0.0
+                alpha = 2.0 / (span + 1.0)
+                result = v[0]
+                for x in v[1:]:
+                    result = alpha * x + (1 - alpha) * result
+                return float(result)
+            row[f"{stat}_ewm3"]  = _ewm(arr, 3)
+            row[f"{stat}_ewm7"]  = _ewm(arr, 7)
+            row[f"{stat}_ewm15"] = _ewm(arr, 15)
+        else:
+            row[f"{stat}_ewm3"]  = 0.0
+            row[f"{stat}_ewm7"]  = 0.0
+            row[f"{stat}_ewm15"] = 0.0
+
     # last3: strictly limited to current-series games during playoffs
     for stat in ["pts", "ast", "reb", "fg3m"]:
         vals = history.get(stat, [])
@@ -623,6 +645,18 @@ _NOISE_SCALES: dict[str, float] = {
     "fg_pct_last5": 0.030,  "fg_pct_last10": 0.018,  "fg_pct_season_avg": 0.010,
     "fg3_pct_last5": 0.040, "fg3_pct_last10": 0.025, "fg3_pct_season_avg": 0.015,
     "usg_pct_last5": 0.03,  "usg_pct_last10": 0.02,  "usg_pct_season_avg": 0.01,
+    # EWM features — similar scale to their simple-rolling counterparts
+    "pts_ewm3": 3.5,    "pts_ewm7": 2.5,    "pts_ewm15": 1.5,
+    "ast_ewm3": 1.2,    "ast_ewm7": 0.8,    "ast_ewm15": 0.5,
+    "reb_ewm3": 1.8,    "reb_ewm7": 1.2,    "reb_ewm15": 0.8,
+    "stl_ewm3": 0.45,   "stl_ewm7": 0.3,    "stl_ewm15": 0.2,
+    "blk_ewm3": 0.55,   "blk_ewm7": 0.35,   "blk_ewm15": 0.25,
+    "fg3m_ewm3": 0.9,   "fg3m_ewm7": 0.6,   "fg3m_ewm15": 0.4,
+    "tov_ewm3": 0.6,    "tov_ewm7": 0.4,    "tov_ewm15": 0.25,
+    "min_ewm3": 3.0,    "min_ewm7": 2.0,    "min_ewm15": 1.2,
+    "fg_pct_ewm3": 0.035, "fg_pct_ewm7": 0.022, "fg_pct_ewm15": 0.012,
+    "fg3_pct_ewm3": 0.045,"fg3_pct_ewm7": 0.028,"fg3_pct_ewm15": 0.018,
+    "usg_pct_ewm3": 0.035,"usg_pct_ewm7": 0.022,"usg_pct_ewm15": 0.012,
     "opp_pts_per_game": 1.5, "opp_fg_pct": 0.020, "opp_fg3_pct": 0.025,
     "opp_ast_pg": 0.4, "opp_reb_pg": 0.5, "opp_fg3m_pg": 0.15, "opp_blk_pg": 0.08, "opp_stl_pg": 0.10,
     "opp_pos_pts": 1.5, "opp_pos_ast": 0.4, "opp_pos_reb": 0.5, "opp_pos_fg3m": 0.15, "opp_pos_blk": 0.08, "opp_pos_stl": 0.10,

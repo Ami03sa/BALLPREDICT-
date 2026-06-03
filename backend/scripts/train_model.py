@@ -39,7 +39,7 @@ _WIN_PROB_FEATURES = [
 
 ROLL_STATS = ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov", "min", "fg_pct", "fg3_pct", "usg_pct"]
 
-XGB_PARAMS = dict(
+_DEFAULT_XGB_PARAMS = dict(
     n_estimators=300,
     max_depth=5,
     learning_rate=0.04,
@@ -53,6 +53,18 @@ XGB_PARAMS = dict(
     random_state=42,
     n_jobs=-1,
 )
+
+# Load Optuna-tuned params if available (produced by tune_hyperparams.py).
+# Falls back to hand-tuned defaults so training always works without tuning first.
+_BEST_PARAMS_PATH = Path(__file__).parent.parent / "data" / "models" / "best_params.json"
+if _BEST_PARAMS_PATH.exists():
+    with open(_BEST_PARAMS_PATH) as _f:
+        _tuned = json.load(_f)
+    # Merge: tuned params override defaults, but keep fixed keys (objective etc.)
+    XGB_PARAMS = {**_DEFAULT_XGB_PARAMS, **_tuned}
+    print(f"[train_model] Loaded tuned hyperparams from {_BEST_PARAMS_PATH.name}")
+else:
+    XGB_PARAMS = _DEFAULT_XGB_PARAMS
 
 
 # ── Load data ─────────────────────────────────────────────────────────────────
@@ -330,6 +342,25 @@ def build_features(logs: pd.DataFrame, def_stats: pd.DataFrame, positions: pd.Da
         shifted = grp[stat].shift(1)
         logs[f"{stat}_last3"] = shifted.groupby(logs["player_id"]).transform(lambda x: x.rolling(3, min_periods=1).mean())
 
+    # ── Exponentially weighted moving averages (3 / 7 / 15 games) ────────────
+    # Recent games get exponentially more weight than older games.
+    # Three spans capture different trend horizons:
+    #   ewm3  — immediate hot/cold streak (last 1-2 games dominate)
+    #   ewm7  — medium-term form (last ~week of games)
+    #   ewm15 — season arc / role evolution (last ~2 weeks)
+    # adjust=False: recursive EWM (standard for time-series, avoids initialisation bias)
+    for stat in ROLL_STATS:
+        shifted = grp[stat].shift(1)
+        logs[f"{stat}_ewm3"]  = shifted.groupby(logs["player_id"]).transform(
+            lambda x: x.ewm(span=3,  min_periods=1, adjust=False).mean()
+        )
+        logs[f"{stat}_ewm7"]  = shifted.groupby(logs["player_id"]).transform(
+            lambda x: x.ewm(span=7,  min_periods=1, adjust=False).mean()
+        )
+        logs[f"{stat}_ewm15"] = shifted.groupby(logs["player_id"]).transform(
+            lambda x: x.ewm(span=15, min_periods=1, adjust=False).mean()
+        )
+
     # Minutes consistency — std of last 10 games
     logs["min_std_last10"] = (
         grp["min"].transform(lambda x: x.shift(1).rolling(10, min_periods=3).std()).fillna(5.0)
@@ -477,6 +508,7 @@ def _feature_cols() -> list[str]:
     cols = []
     for stat in ROLL_STATS:
         cols += [f"{stat}_last5", f"{stat}_last10", f"{stat}_season_avg"]
+        cols += [f"{stat}_ewm3", f"{stat}_ewm7", f"{stat}_ewm15"]
     for stat in ["pts", "ast", "reb", "fg3m"]:
         cols += [f"{stat}_last3"]
     cols += ["opp_pts_per_game", "opp_fg_pct", "opp_fg3_pct",
