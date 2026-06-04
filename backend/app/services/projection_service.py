@@ -2096,7 +2096,7 @@ class ProjectionService:
         #   3. ceiling_signal — how far the volatility ceiling is above 30 pts (0→0.5)
         #   4. playoff_mult — stars elevate in playoffs; applies 15% boost if applicable
         #   Final: clamp(opp_adj_rate × 0.55 + ceiling_signal × 0.45, 0, 0.95) × playoff_mult
-        is_playoffs = context.playoff_intensity >= 0.65
+        is_playoffs = context.playoff_intensity >= 0.55
         playoff_mult = 1.15 if is_playoffs else 1.0
 
         # Elimination breakout boost: top-2 usage players on a must-win team

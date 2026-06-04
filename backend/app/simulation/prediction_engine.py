@@ -1109,7 +1109,14 @@ class PredictionEngine:
             #     opp_factor = 23.4/26.3 = 0.89   (CLE holds guards to 89% of avg)
             #     form_proj = 27.6 × 0.89 = 24.6
             #     proj_pts  = 24.6 × 0.57 + 23.4 × 0.43 = 24.1   vs old: 20.7
-            if player.pts_avg > 4.0:
+            # ── Form-first applies only to stars and starters ─────────────────────
+            # Bench/rotation players: XGBoost mean is more reliable than a
+            # pts_avg anchor (small sample, volatile minutes).  OKC-era behaviour
+            # kept for these roles — hot_factor only stretches the CI bands below,
+            # the mean stays pinned to XGBoost.
+            # Stars/starters: form-first is the right anchor — large sample, high
+            # usage means pts_avg is meaningful and XGBoost undershoots (Brunson 18.9).
+            if player.pts_avg > 4.0 and player.rotation_role in ("star", "starter"):
                 _xgb_pts = proj_pts   # XGBoost absolute (already prop-blended)
                 _xgb_ast = proj_ast
 
@@ -1134,15 +1141,9 @@ class PredictionEngine:
                              * _opp_factor_ast)
 
                 # ── Role-based blend weight ────────────────────────────────────────
-                # Stars → form is the more reliable signal (large sample, high usage)
-                # Bench → XGBoost's matchup model is stronger than noisy form data
-                _role_form_w: dict[str, float] = {
-                    "star":     0.55,
-                    "starter":  0.45,
-                    "rotation": 0.28,
-                    "bench":    0.12,
-                }
-                _base_form_w = _role_form_w.get(player.rotation_role, 0.28)
+                # Stars  → form is the stronger signal (deep sample, high usage)
+                # Starters → slight XGB lean for matchup precision
+                _base_form_w = 0.55 if player.rotation_role == "star" else 0.45
 
                 # Hot/cold divergence from neutral → trust form more
                 _hot_div     = abs(hot - 1.0)
@@ -1151,6 +1152,7 @@ class PredictionEngine:
 
                 proj_pts = round(_form_pts * _form_weight + _xgb_pts * _xgb_weight, 1)
                 proj_ast = round(_form_ast * _form_weight + _xgb_ast * _xgb_weight, 1)
+            # rotation/bench: mean stays at XGBoost — hot_factor only moves bands below
 
             # ── Data-driven playoff elevation ──────────────────────────────────────
             #
