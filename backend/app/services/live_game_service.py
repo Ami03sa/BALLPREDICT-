@@ -58,23 +58,206 @@ def _zero_snapshot(snapshot: GameSnapshot) -> GameSnapshot:
     )
 
 
+_GAME_CACHE_PATH = (
+    __import__("pathlib").Path(__file__).parent.parent.parent / "data" / "last_game_cache.json"
+)
+
+
 class LiveGameService:
     def __init__(self) -> None:
         self._contexts: dict[str, GameContext] = {}
         self._slate: dict[str, dict] = {}
 
+    # ── Persistence helpers ────────────────────────────────────────────────
+
+    def _save_game_cache(self, slate: dict, contexts: dict) -> None:
+        """Persist minimal game metadata so the last game survives a server restart."""
+        import json as _json
+        try:
+            payload = {}
+            for game_id, ctx in contexts.items():
+                meta = slate.get(game_id, {})
+                payload[game_id] = {
+                    "game_id": game_id,
+                    "home_tc":      ctx.home_team.team_id.upper(),
+                    "away_tc":      ctx.away_team.team_id.upper(),
+                    "home_name":    ctx.home_team.team_name,
+                    "away_name":    ctx.away_team.team_name,
+                    "home_team_id": meta.get("home_team_id", 0),
+                    "away_team_id": meta.get("away_team_id", 0),
+                    "home_score":   ctx.home_team.score,
+                    "away_score":   ctx.away_team.score,
+                    "status":       meta.get("status", "final"),
+                    "tipoff":       meta.get("tipoff", ""),
+                    "headline":     meta.get("headline", ""),
+                    "home_record":  meta.get("home_record", ""),
+                    "away_record":  meta.get("away_record", ""),
+                    "playoff_intensity": ctx.playoff_intensity,
+                    # Team ratings — needed for quality projections
+                    "home_off_rtg": ctx.home_team.offensive_rating,
+                    "home_def_rtg": ctx.home_team.defensive_rating,
+                    "home_pace":    ctx.home_team.pace,
+                    "away_off_rtg": ctx.away_team.offensive_rating,
+                    "away_def_rtg": ctx.away_team.defensive_rating,
+                    "away_pace":    ctx.away_team.pace,
+                    "home_vegas":   ctx.home_vegas_total,
+                    "away_vegas":   ctx.away_vegas_total,
+                }
+            _GAME_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _GAME_CACHE_PATH.write_text(_json.dumps(payload, indent=2))
+            logger.info("Game cache saved: %d game(s) → %s", len(payload), _GAME_CACHE_PATH)
+        except Exception as exc:
+            logger.warning("Could not save game cache: %s", exc)
+
+    async def _bootstrap_from_cache(self) -> bool:
+        """
+        Load last known game(s) from disk and rebuild contexts using current
+        DB season averages.  Called when today's scoreboard is empty so the
+        app keeps showing the most recently played game until the next tip-off.
+        Returns True if at least one game was restored.
+        """
+        import json as _json
+        if not _GAME_CACHE_PATH.exists():
+            return False
+        try:
+            payload = _json.loads(_GAME_CACHE_PATH.read_text())
+        except Exception as exc:
+            logger.warning("Could not read game cache: %s", exc)
+            return False
+
+        if not payload:
+            return False
+
+        from app.services.providers.nba_live_client import nba_live_client
+        from app.services.nba_api_service import (
+            _build_team_state_from_season_stats,
+            _enrich_players_from_db,
+        )
+        from app.simulation.state import GameContext, TeamGameState
+
+        restored = 0
+        for game_id, meta in payload.items():
+            try:
+                home_tc = meta["home_tc"]
+                away_tc = meta["away_tc"]
+                home_team_id = int(meta.get("home_team_id") or 0)
+                away_team_id = int(meta.get("away_team_id") or 0)
+
+                # Fetch fresh season stats from API; fall back to empty (DB fills gaps)
+                home_season, away_season = [], []
+                try:
+                    home_season, away_season = await asyncio.gather(
+                        nba_live_client.fetch_player_season_stats(home_team_id),
+                        nba_live_client.fetch_player_season_stats(away_team_id),
+                    )
+                except Exception:
+                    pass  # _enrich_players_from_db will cover it
+
+                # Minimal team_raw dicts for the builder
+                home_raw = {"teamTricode": home_tc, "teamId": home_team_id,
+                            "teamCity": "", "teamName": meta.get("home_name", home_tc)}
+                away_raw = {"teamTricode": away_tc, "teamId": away_team_id,
+                            "teamCity": "", "teamName": meta.get("away_name", away_tc)}
+
+                # Build teams with season-avg ratings from cache
+                _fake_ratings = {
+                    home_tc: {"off_rating": meta["home_off_rtg"], "def_rating": meta["home_def_rtg"], "pace": meta["home_pace"]},
+                    away_tc: {"off_rating": meta["away_off_rtg"], "def_rating": meta["away_def_rtg"], "pace": meta["away_pace"]},
+                }
+
+                if home_season and away_season:
+                    home_team = _build_team_state_from_season_stats(
+                        home_raw, meta.get("home_score", 0), home_season, _fake_ratings
+                    )
+                    away_team = _build_team_state_from_season_stats(
+                        away_raw, meta.get("away_score", 0), away_season, _fake_ratings
+                    )
+                else:
+                    # No API data — we'll rely entirely on DB enrichment below
+                    from app.services.nba_api_service import _build_minimal_team_state
+                    home_team = _build_minimal_team_state(home_raw, meta.get("home_score", 0), _fake_ratings)
+                    away_team = _build_minimal_team_state(away_raw, meta.get("away_score", 0), _fake_ratings)
+
+                # DB enrichment fills any remaining pts_avg=0 gaps
+                _enrich_players_from_db(home_team)
+                _enrich_players_from_db(away_team)
+
+                ctx = GameContext(
+                    game_id=game_id,
+                    quarter=4,
+                    clock="0:00",
+                    home_team=home_team,
+                    away_team=away_team,
+                    score_margin=meta.get("home_score", 0) - meta.get("away_score", 0),
+                    home_advantage=2.4,
+                    overtime_probability=0.02,
+                    momentum=0.0,
+                    fatigue_pressure=0.5,
+                    whistle_tightness=0.48,
+                    playoff_intensity=meta.get("playoff_intensity", 0.60),
+                    live_pace_multiplier=1.0,
+                    injury_risk_flags=[],
+                    back_to_back=False,
+                    home_vegas_total=meta.get("home_vegas"),
+                    away_vegas_total=meta.get("away_vegas"),
+                )
+
+                slate_row = {
+                    "game_id": game_id,
+                    "status": meta.get("status", "final"),
+                    "tipoff": meta.get("tipoff", ""),
+                    "broadcast": "NBA TV",
+                    "arena": "",
+                    "headline": meta.get("headline", f"{away_tc} at {home_tc}"),
+                    "home_team": meta.get("home_name", home_tc),
+                    "away_team": meta.get("away_name", away_tc),
+                    "home_abbreviation": home_tc,
+                    "away_abbreviation": away_tc,
+                    "home_record": meta.get("home_record", ""),
+                    "away_record": meta.get("away_record", ""),
+                }
+
+                self._slate[game_id] = slate_row
+                self._contexts[game_id] = ctx
+                restored += 1
+                logger.info(
+                    "Restored cached game %s (%s vs %s) — %d home / %d away players",
+                    game_id, home_tc, away_tc,
+                    len(home_team.players), len(away_team.players),
+                )
+            except Exception as exc:
+                logger.warning("Could not restore cached game %s: %s", game_id, exc)
+
+        return restored > 0
+
     async def bootstrap_demo_game(self) -> None:
-        """Called on startup — fetches today's real NBA games from the public CDN."""
+        """Called on startup — fetches today's real NBA games from the public CDN.
+        If the scoreboard is empty (off-day between games), restores the last
+        known game from disk so the app stays live until the next tip-off."""
         try:
             slate, contexts = await nba_api_service.fetch_today_slate_and_contexts()
             if contexts:
                 self._slate = slate
                 self._contexts = contexts
+                # Persist team_id info needed for cache reconstruction
+                for game_id, meta in slate.items():
+                    ctx = contexts.get(game_id)
+                    if ctx:
+                        meta.setdefault("home_team_id", 0)
+                        meta.setdefault("away_team_id", 0)
+                self._save_game_cache(slate, contexts)
                 logger.info("Loaded %d live NBA game(s) from CDN.", len(contexts))
             else:
-                logger.warning("No NBA games found for today — slate will be empty.")
+                logger.warning("No NBA games today — restoring last known game from cache.")
+                restored = await self._bootstrap_from_cache()
+                if not restored:
+                    logger.warning("No cached game available — slate will be empty.")
         except Exception as exc:
-            logger.error("NBA CDN fetch failed (%s). Slate will be empty.", exc)
+            logger.error("NBA CDN fetch failed (%s) — trying cache restore.", exc)
+            try:
+                await self._bootstrap_from_cache()
+            except Exception:
+                pass
 
     def _build_context(self, **kwargs) -> GameContext:
         return GameContext(**kwargs)

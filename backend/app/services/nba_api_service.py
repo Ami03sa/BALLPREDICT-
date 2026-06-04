@@ -699,6 +699,9 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
             "away_abbreviation": away_tc,
             "home_record": f"{home_raw.get('wins', 0)}-{home_raw.get('losses', 0)}",
             "away_record": f"{away_raw.get('wins', 0)}-{away_raw.get('losses', 0)}",
+            # Team IDs stored so the game cache can re-fetch season stats on restore
+            "home_team_id": int(home_raw.get("teamId") or 0),
+            "away_team_id": int(away_raw.get("teamId") or 0),
         }
 
         period = game.get("period", 0) if game_status > 1 else 0

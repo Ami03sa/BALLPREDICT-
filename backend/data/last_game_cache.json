@@ -1,0 +1,27 @@
+{
+  "0042500401": {
+    "game_id": "0042500401",
+    "home_tc": "SAS",
+    "away_tc": "NYK",
+    "home_name": "San Antonio Spurs",
+    "away_name": "New York Knicks",
+    "home_team_id": 1610612759,
+    "away_team_id": 1610612752,
+    "home_score": 95,
+    "away_score": 105,
+    "status": "final",
+    "tipoff": "8:30 PM ET",
+    "headline": "New York Knicks at San Antonio Spurs",
+    "home_record": "0-1",
+    "away_record": "1-0",
+    "playoff_intensity": 0.55,
+    "home_off_rtg": 118.7,
+    "home_def_rtg": 110.4,
+    "home_pace": 100.72,
+    "away_off_rtg": 118.7,
+    "away_def_rtg": 112.3,
+    "away_pace": 97.71,
+    "home_vegas": null,
+    "away_vegas": null
+  }
+}
