@@ -1442,6 +1442,17 @@ class ProjectionService:
                 if pid in avg_min:
                     avg_min[pid] = round(avg_min[pid] * min_mult, 1)
 
+        # Floor play probability at 0.85 for confirmed starters — they almost always play.
+        starter_ids = {
+            p.player_id
+            for p in context.home_team.players + context.away_team.players
+            if p.rotation_role == "starter"
+            and (p.availability_status or "").lower() not in _status_adjustments
+        }
+        for pid in starter_ids:
+            if pid in play_prob:
+                play_prob[pid] = max(0.85, play_prob[pid])
+
         # Fetch team-level context (form + B2B) for both teams
         home_tc = context.home_team.team_id.upper()
         away_tc = context.away_team.team_id.upper()
@@ -1470,33 +1481,6 @@ class ProjectionService:
             # Fetch series-level team efficiency (pts, tov, reb, def) for both sides
             home_series_eff = _fetch_series_team_efficiency(home_tc, away_tc)
             away_series_eff = _fetch_series_team_efficiency(away_tc, home_tc)
-
-        # Floor play probability for stars/starters now that is_playoffs is known.
-        # Stars and starters almost always play — cap DNP risk at a low level.
-        # Regular season: 0.88 / 0.85 floor.
-        # Playoffs: 0.95 floor — teams never rest stars in the postseason, so the
-        # historical season play_prob (e.g. 0.92 for 75/82 RS games) substantially
-        # understates actual playoff participation.  Without this floor, play_prob
-        # is applied twice in _apply_scale, compressing star projections by ~8-15%.
-        _pl_star_floor    = 0.95 if is_playoffs else 0.88
-        _pl_starter_floor = 0.95 if is_playoffs else 0.85
-        _all_players = context.home_team.players + context.away_team.players
-        _star_ids = {
-            p.player_id for p in _all_players
-            if p.rotation_role == "star"
-            and (p.availability_status or "").lower() not in _status_adjustments
-        }
-        _starter_ids = {
-            p.player_id for p in _all_players
-            if p.rotation_role == "starter"
-            and (p.availability_status or "").lower() not in _status_adjustments
-        }
-        for pid in _star_ids:
-            if pid in play_prob:
-                play_prob[pid] = max(_pl_star_floor, play_prob[pid])
-        for pid in _starter_ids:
-            if pid in play_prob:
-                play_prob[pid] = max(_pl_starter_floor, play_prob[pid])
 
         # ── Feature 3: Per-player series usage (usage shift detection) ────────
         # Fetch how each player is actually performing in THIS series vs this opponent.
@@ -1667,22 +1651,35 @@ class ProjectionService:
             # 3 days = +1%, 4+ days = +0.5% (can get rusty)
             player_estimate *= rest_factor
 
-            # ── Playoff scoring calibration — REMOVED ────────────────────────
-            # The historical RS→playoff deflation ratio (~0.9488) was previously
-            # applied here as a blanket -5% reduction to player_estimate.
+            # ── Playoff scoring calibration ───────────────────────────────────
+            # Playoffs score ~5% less than regular season — slower pace, tighter
+            # defensive schemes, targeted opponent prep. We compute the exact
+            # ratio from the training DB (not a fixed constant) so it stays
+            # current as more playoff data is ingested.
             #
-            # This was double-counting: the form-first model's hot_factor already
-            # captures each player's actual recent scoring (last-5 games), which
-            # for playoff games ARE the playoff games themselves.  Brunson scoring
-            # 30/38 in the current series already shows up as hot_factor > 1.0 in
-            # project_player(); shrinking the team total by another 5% then forces
-            # _apply_scale to compress all individual projections down (e.g. 24.6 → 20.7).
+            # The calibration fades as series evidence accumulates:
+            #   Game 1 (series_games=0): full ratio applied — maximum unknown,
+            #     lean on the historical prior (RS→playoff deflation).
+            #   Game 4+ (series_games≥4): ratio fades to 1.0 — actual series
+            #     box scores are now more informative than any prior calibration.
             #
-            # The opp_factor from XGBoost also already adjusts for the specific
-            # opponent's defensive quality, so there is no unpriced "playoff tightness"
-            # left to correct.  Series-level calibration (lines below) handles any
-            # remaining team-total drift once 1+ games of series data exist.
-            # ─────────────────────────────────────────────────────────────────
+            # Formula (no hard-coded pts subtracted):
+            #   series_decay    = min(1.0, series_games / 4)
+            #   effective_ratio = 1 − (1 − playoff_ratio) × (1 − series_decay)
+            #   player_estimate × effective_ratio
+            #
+            # Example (playoff_ratio=0.9488, series_games=0):
+            #   effective_ratio = 1 − (1−0.9488)×1.0 = 0.9488  (full ~5% down)
+            # Example (series_games=2):
+            #   effective_ratio = 1 − 0.0512×0.5     = 0.9744  (half calibration)
+            # Example (series_games=4):
+            #   effective_ratio = 1 − 0.0512×0.0     = 1.0000  (series data takes over)
+            if is_playoffs:
+                _sg_early = (series_eff or {}).get("games_played", 0)
+                _playoff_ratio  = _fetch_playoff_scoring_ratio()
+                _series_decay   = min(1.0, _sg_early / 4.0)
+                _effective_ratio = 1.0 - (1.0 - _playoff_ratio) * (1.0 - _series_decay)
+                player_estimate *= _effective_ratio
 
             # ── Road trip fatigue ─────────────────────────────────────────────
             # Consecutive away games drain energy — penalty added flat after blend
@@ -1876,13 +1873,9 @@ class ProjectionService:
             if series_games >= 2:
                 return round(player_estimate + flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor + coach_adjustment)
             elif series_games == 1:
-                blended = player_estimate * 0.80 + pace_estimate * 0.20
+                blended = player_estimate * 0.75 + pace_estimate * 0.25
             else:
-                # Game 1 / no series data: form-first individual projections are our
-                # best signal.  Weight the player model heavily so the team total
-                # stays close to the sum of form-first individual predictions and
-                # _apply_scale has minimal compression to apply.
-                blended = player_estimate * 0.85 + pace_estimate * 0.15
+                blended = player_estimate * 0.65 + pace_estimate * 0.35
 
             blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor + coach_adjustment
             return round(blended)
@@ -2009,70 +2002,6 @@ class ProjectionService:
 
         home_player_projections = _apply_scale(home_player_projections, home_total)
         away_player_projections = _apply_scale(away_player_projections, away_total)
-
-        # ── Post-scale hot-form redistribution ────────────────────────────────
-        # _apply_scale normalises to the team total, which can nullify the
-        # hot-factor signal applied in project_player().  Fix: re-apply hot
-        # factor and playoff lift AFTER scaling as a relative redistribution.
-        #
-        # Algorithm (preserves team total):
-        #   1. Compute boost_i = hot_nudge_i × playoff_lift_i for each player.
-        #   2. boosted_pts_i = scaled_pts_i × boost_i
-        #   3. Re-normalise so sum(boosted_pts) = team_total.
-        #   4. Hot players steal share from cold/neutral players; sum is conserved.
-        from app.simulation.prediction_engine import _get_playoff_lift
-        _is_playoffs_redist = context.playoff_intensity >= 0.55
-
-        def _redistribute(projections: list, team_total: int) -> list[PlayerProjection]:
-            """
-            Post-scale redistribution: apply playoff role-lift weights to shift
-            scoring share toward stars/starters in playoff games.
-
-            Hot factor is already baked into each player's initial projection by
-            project_player() (form-first model), so we do NOT re-apply it here.
-            Only the DB-derived playoff role lift is used as the redistribution
-            weight — this keeps stars slightly above their scaled share in
-            high-intensity playoff situations without double-counting form.
-            """
-            active = [p for p in projections if p.availability_status != "dnp"]
-            if not active:
-                return projections
-
-            boosts: dict[str, float] = {}
-            for p in active:
-                # Playoff role lift (data-driven): star > starter > rotation > bench
-                # In RS (no playoff lift), all players get weight=1.0 → no redistribution.
-                lift = _get_playoff_lift(p.rotation_role) if _is_playoffs_redist else 1.0
-                boosts[p.player_id] = lift
-
-            # Apply boosts to current (already-scaled) pts
-            boosted = {
-                p.player_id: p.projected_stats.mean.points * boosts[p.player_id]
-                for p in active
-            }
-            total_boosted = sum(boosted.values())
-            if total_boosted < 1.0:
-                return projections
-
-            # Re-normalise to preserve team total
-            norm = team_total / total_boosted
-            result = []
-            for p in projections:
-                if p.availability_status == "dnp":
-                    result.append(p)
-                    continue
-                orig = p.projected_stats.mean.points
-                if orig > 0:
-                    new_scale = boosted[p.player_id] * norm / orig
-                    role_cap  = _ROLE_BOOST_CAP.get(p.rotation_role, 1.25)
-                    new_scale = min(new_scale, role_cap)
-                    result.append(_rescale_player_pts(p, new_scale))
-                else:
-                    result.append(p)
-            return result
-
-        home_player_projections = _redistribute(home_player_projections, home_total)
-        away_player_projections = _redistribute(away_player_projections, away_total)
 
         # Compute breakout_stats as a SEPARATE column — projected_stats (XGBoost
         # floor/mean/ceiling) is left completely untouched. Volatility ceilings live

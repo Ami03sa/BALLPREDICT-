@@ -237,109 +237,38 @@ def _prop_line(player_name: str, stat: str, player_id: str | None = None) -> tup
 
 def _hot_factor(player_id: str) -> float:
     """
-    Measures recent scoring form relative to the player's current-season
-    Regular Season average — the most mathematically stable baseline.
-
-    Formula:
-      last5_avg / rs_avg   (both from games with 24+ min)
-
-    Baseline = current-season RS average (Regular Season games only).
-    Recent form = last 5 qualifying games regardless of season type.
-
-    Why RS-only baseline?
-    - Mixing RS + playoff games in the baseline inflates the average for
-      star players (e.g. Brunson RS avg ~22 pts, all-time avg ~25 pts
-      because his playoff numbers are higher).  Using RS-only as the
-      neutral expectation lets the playoff form be read as genuinely "hot".
-    - Mathematically: RS avg is the pre-playoff prediction anchor.
-      If a player is outperforming their RS level in the playoffs → hot.
-
-    Example (Brunson, 2025 playoffs):
-      RS avg  = 22.0 pts   (current season, games with 24+ min)
-      Last 5  = 24.8 pts   (recent playoff form)
-      hot     = 24.8 / 22.0 = 1.127  → correctly hot
-
-    Fall-through: if no RS data for the current season, falls back to
-    the all-game season average (prior behaviour).
-    Clamped to [0.78, 1.40].
+    Compares last-3-game scoring to last-10-game average.
+    Returns a multiplier:
+      > 1.0 → player is running hot (takeover candidate)
+      < 1.0 → player is cold / being contained
+      1.0   → no meaningful trend
+    Clamped to [0.70, 1.45] so it doesn't blow up projections.
     """
     if not _DB_PATH.exists():
         return 1.0
     try:
         conn = sqlite3.connect(str(_DB_PATH))
-
-        # ── Step 1: current-season RS baseline ────────────────────────────
-        # Find the most recent season where the player has RS games with 24+ min
-        rs_row = conn.execute(
-            """
-            SELECT season, AVG(pts) AS rs_avg, COUNT(*) AS n
-            FROM player_game_logs
-            WHERE player_id = ?
-              AND min >= 24
-              AND season_type = 'Regular Season'
-            GROUP BY season
-            ORDER BY season DESC
-            LIMIT 1
-            """,
-            (player_id,),
-        ).fetchone()
-
-        rs_avg: float | None = None
-        if rs_row and rs_row[2] and int(rs_row[2]) >= 10:
-            rs_avg = float(rs_row[1])
-
-        # ── Step 2: last 5 qualifying games (any season type) ─────────────
-        recent_rows = conn.execute(
-            """
-            SELECT pts, min
-            FROM player_game_logs
-            WHERE player_id = ? AND min >= 24
-            ORDER BY game_date DESC
-            LIMIT 15
-            """,
+        rows = conn.execute(
+            "SELECT pts, min FROM player_game_logs WHERE player_id = ? AND min > 0 ORDER BY game_date DESC LIMIT 10",
             (player_id,),
         ).fetchall()
-
-        # Fallback: all-game season avg (original behaviour) if RS baseline missing
-        if rs_avg is None:
-            fallback_rows = conn.execute(
-                """
-                SELECT pts, min
-                FROM player_game_logs
-                WHERE player_id = ? AND min >= 24
-                ORDER BY game_date DESC
-                LIMIT 60
-                """,
-                (player_id,),
-            ).fetchall()
-            conn.close()
-            if not fallback_rows or len(fallback_rows) < 6:
-                return 1.0
-            all_pts = [float(r[0]) for r in fallback_rows]
-            season_avg = sum(all_pts) / len(all_pts)
-            if season_avg <= 0:
-                return 1.0
-            last5 = all_pts[:5]
-            if len(last5) < 5:
-                return 1.0
-            ratio = (sum(last5) / 5) / season_avg
-            return round(min(1.40, max(0.78, ratio)), 3)
-
         conn.close()
-
-        if not recent_rows or len(recent_rows) < 5:
-            return 1.0
-
-        last5_avg = sum(float(r[0]) for r in recent_rows[:5]) / 5
-
-        if rs_avg <= 0:
-            return 1.0
-
-        ratio = last5_avg / rs_avg
-        return round(min(1.40, max(0.78, ratio)), 3)
-
     except Exception:
         return 1.0
+
+    # Require 20+ minutes so foul-trouble games don't skew the ratio
+    played = [(r[0], r[1]) for r in rows if float(r[1] or 0) >= 20]
+    if len(played) < 4:
+        return 1.0
+
+    last3_avg  = sum(p[0] for p in played[:3]) / 3
+    last10_avg = sum(p[0] for p in played) / len(played)
+
+    if last10_avg <= 0:
+        return 1.0
+
+    ratio = last3_avg / last10_avg
+    return round(min(1.45, max(0.70, ratio)), 3)
 
 
 def _player_history(player_id: str, is_playoffs: bool = False, opp_team_id: str | None = None) -> dict:
@@ -1082,75 +1011,35 @@ class PredictionEngine:
                     elif stat_key == "fg3m":
                         proj_fg3m = blended
 
-            # ── Form-first projection ─────────────────────────────────────────────
+            # ── Coefficient-of-variation hot-factor nudge ─────────────────────────
             #
-            # Architecture:
-            #   XGBoost absolute output   → BAD anchor: opponent defense features
-            #     dominate and can pull a 26-pt star down to 17 pts even when he's
-            #     on a hot run (e.g. Brunson 27.6 recent avg → XGB says 21 vs CLE).
+            # Problem: hot_factor only stretched CI bands — the mean (proj_pts) never moved.
+            # Fix: bleed a fraction of the hot signal into the mean, where the fraction
+            # is derived entirely from the player's own statistical profile — no hardcoding.
             #
-            #   Form-first (new):
-            #     1. form_pts  = pts_avg × hot_factor   — player's own RS baseline
-            #                                             adjusted for current form
-            #     2. opp_factor = xgb_pts / pts_avg     — XGBoost's RELATIVE shift
-            #                                             from season avg (not absolute).
-            #                                             Captures opponent defense,
-            #                                             pace, matchup WITHOUT
-            #                                             over-anchoring on the raw value.
-            #     3. proj_pts  = form_pts × opp_factor  — form-expected × matchup-adjusted
+            # std_est   — estimated pts std-dev from the quantile CI band.
+            #             The q10→q90 range spans ≈2.56σ for a normal distribution,
+            #             so std ≈ (q90 - q10) / 2.56.
+            # cv        — coefficient of variation = std / mean.
+            #             A star who regularly swings ±10 pts has high CV (streaky);
+            #             a consistent role player has low CV (predictable).
+            # min_rel   — minutes reliability. Bench players on 15 min have volatile
+            #             samples driven by rotation decisions, not form. Normalise to
+            #             32 min (a full starter load) so signal weight degrades below that.
+            # hot_weight — how much of the hot signal to trust for THIS player.
+            #             Naturally 0 for perfectly consistent players, up to 0.65 cap.
             #
-            #   Role-based blend weight:
-            #     Stars (high usage) → form is a stronger signal, blend 55% form + 45% XGB
-            #     Bench (noisy mins)  → XGB is more reliable,   blend 15% form + 85% XGB
-            #     Hot/cold divergence increases form weight proportionally.
-            #
-            #   Result: Brunson (hot=1.05, vs CLE):
-            #     form_pts  = 26.3 × 1.05 = 27.6
-            #     opp_factor = 23.4/26.3 = 0.89   (CLE holds guards to 89% of avg)
-            #     form_proj = 27.6 × 0.89 = 24.6
-            #     proj_pts  = 24.6 × 0.57 + 23.4 × 0.43 = 24.1   vs old: 20.7
-            if player.pts_avg > 4.0:
-                _xgb_pts = proj_pts   # XGBoost absolute (already prop-blended)
-                _xgb_ast = proj_ast
-
-                # ── Opponent adjustment ratio ──────────────────────────────────────
-                # How much does this specific matchup (defense, pace, scheme) shift
-                # output from the player's season average?  XGBoost captures this as
-                # a ratio; applying it to the form-base preserves the matchup signal
-                # without letting it fully anchor away from the player's actual form.
-                _opp_factor_pts = _xgb_pts / max(1.0, player.pts_avg)
-                _opp_factor_pts = max(0.75, min(1.20, _opp_factor_pts))
-
-                _opp_factor_ast = (_xgb_ast / max(0.5, player.ast_avg)
-                                   if player.ast_avg > 0.5 else 1.0)
-                _opp_factor_ast = max(0.75, min(1.20, _opp_factor_ast))
-
-                # ── Form-anchored prediction ───────────────────────────────────────
-                # pts_avg × hot    = "what should this player score given their form"
-                # × opp_factor     = "but adjust for tonight's specific matchup"
-                _form_pts = player.pts_avg * hot * _opp_factor_pts
-                _form_ast = (player.ast_avg
-                             * (1.0 + (hot - 1.0) * 0.40)
-                             * _opp_factor_ast)
-
-                # ── Role-based blend weight ────────────────────────────────────────
-                # Stars → form is the more reliable signal (large sample, high usage)
-                # Bench → XGBoost's matchup model is stronger than noisy form data
-                _role_form_w: dict[str, float] = {
-                    "star":     0.55,
-                    "starter":  0.45,
-                    "rotation": 0.28,
-                    "bench":    0.12,
-                }
-                _base_form_w = _role_form_w.get(player.rotation_role, 0.28)
-
-                # Hot/cold divergence from neutral → trust form more
-                _hot_div     = abs(hot - 1.0)
-                _form_weight = min(0.80, _base_form_w + _hot_div * 0.60)
-                _xgb_weight  = 1.0 - _form_weight
-
-                proj_pts = round(_form_pts * _form_weight + _xgb_pts * _xgb_weight, 1)
-                proj_ast = round(_form_ast * _form_weight + _xgb_ast * _xgb_weight, 1)
+            # assists track form at ~40% of the pts rate (more predictable stat).
+            if hot != 1.0 and player.pts_avg > 4.0:
+                _pts_ci_range = preds["pts"]["ceiling"] - preds["pts"]["floor"]
+                _std_est      = max(0.5, _pts_ci_range / 2.56)
+                _cv           = _std_est / max(1.0, player.pts_avg)
+                # usage_rate is the best available proxy for role responsibility:
+                # 0.28 ≈ typical "full starter load" — normalise to that baseline.
+                _min_rel      = min(1.0, player.usage_rate / 0.28) if player.usage_rate > 0 else 0.5
+                _hot_weight   = min(0.65, _cv * _min_rel * 1.5)
+                proj_pts = round(proj_pts * (1.0 + (hot - 1.0) * _hot_weight), 1)
+                proj_ast = round(proj_ast * (1.0 + (hot - 1.0) * _hot_weight * 0.40), 1)
 
             # ── Data-driven playoff elevation ──────────────────────────────────────
             #
