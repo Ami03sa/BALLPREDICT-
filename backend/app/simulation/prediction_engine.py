@@ -62,6 +62,83 @@ def _load_models() -> dict | None:
 
 _MODELS = _load_models()
 
+# ── Playoff role lift cache ───────────────────────────────────────────────────
+# Computed once from DB: avg(playoff_pts) / avg(rs_pts) bucketed by usage rate.
+# Usage rate is the best available proxy for role (star / starter / rotation / bench)
+# because it's in the DB and reflects actual on-court responsibility.
+_PLAYOFF_LIFT_CACHE: dict[str, float] = {}
+
+
+def _compute_playoff_role_lifts() -> dict[str, float]:
+    """
+    Data-driven playoff elevation per usage-rate bucket.
+
+    Buckets (mirror the rotation_role labels used at runtime):
+      star:     usg_pct > 0.28  — primary option
+      starter:  0.19 < usg_pct ≤ 0.28
+      rotation: 0.12 < usg_pct ≤ 0.19
+      bench:    usg_pct ≤ 0.12
+
+    Returns ratio = avg(playoff_pts) / avg(rs_pts) per bucket.
+    Clamped to [0.92, 1.20] to keep results sane.
+    Falls back to 1.0 when a bucket has fewer than 100 game-rows.
+    """
+    defaults: dict[str, float] = {
+        "star": 1.0, "starter": 1.0, "rotation": 1.0, "bench": 1.0
+    }
+    if not _DB_PATH.exists():
+        return defaults
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        rows = conn.execute("""
+            SELECT
+                CASE
+                    WHEN usg_pct > 0.28 THEN 'star'
+                    WHEN usg_pct > 0.19 THEN 'starter'
+                    WHEN usg_pct > 0.12 THEN 'rotation'
+                    ELSE                     'bench'
+                END AS role_bucket,
+                season_type,
+                AVG(pts)   AS avg_pts,
+                COUNT(*)   AS n
+            FROM player_game_logs
+            WHERE min >= 15
+              AND usg_pct IS NOT NULL
+              AND usg_pct > 0
+            GROUP BY role_bucket, season_type
+        """).fetchall()
+        conn.close()
+
+        # Build lookup: role_bucket → {season_type → avg_pts}
+        lookup: dict[str, dict[str, float]] = {}
+        for role_bucket, season_type, avg_pts, n in rows:
+            if n < 100:
+                continue
+            lookup.setdefault(role_bucket, {})[season_type] = float(avg_pts)
+
+        lifts: dict[str, float] = {}
+        for bucket in ("star", "starter", "rotation", "bench"):
+            b = lookup.get(bucket, {})
+            po = b.get("Playoffs")
+            rs = b.get("Regular Season")
+            if po and rs and rs > 0:
+                raw = po / rs
+                lifts[bucket] = round(max(0.92, min(1.20, raw)), 4)
+            else:
+                lifts[bucket] = 1.0
+        return lifts
+    except Exception:
+        return defaults
+
+
+def _get_playoff_lift(rotation_role: str) -> float:
+    """Return cached playoff lift for a given role, computing on first call."""
+    global _PLAYOFF_LIFT_CACHE
+    if not _PLAYOFF_LIFT_CACHE:
+        _PLAYOFF_LIFT_CACHE = _compute_playoff_role_lifts()
+    return _PLAYOFF_LIFT_CACHE.get(rotation_role, 1.0)
+
+
 # ── Player props cache ────────────────────────────────────────────────────────
 # Populated daily from The Odds API by nba_api_service.
 # Keys are normalized player names (lowercase, letters + spaces only).
@@ -934,55 +1011,67 @@ class PredictionEngine:
                     elif stat_key == "fg3m":
                         proj_fg3m = blended
 
-            # ── Hot-factor mean nudge ──────────────────────────────────────────────
-            # hot_factor was previously only used to widen/narrow CI bands.
-            # Now 55% of the hot signal also nudges the *mean* prediction up/down.
-            # hot=1.35 (star on a roll) → proj_pts × 1.19
-            # hot=0.80 (cold stretch)   → proj_pts × 0.89
-            # Assists track form at half the pts rate (playmaking is more consistent).
-            if hot != 1.0:
-                _hot_mean_blend = 0.55
-                _hot_pts_mult = 1.0 + (hot - 1.0) * _hot_mean_blend
-                _hot_ast_mult = 1.0 + (hot - 1.0) * 0.28  # assists less volatile
-                proj_pts = round(proj_pts * _hot_pts_mult, 1)
-                proj_ast = round(proj_ast * _hot_ast_mult, 1)
+            # ── Coefficient-of-variation hot-factor nudge ─────────────────────────
+            #
+            # Problem: hot_factor only stretched CI bands — the mean (proj_pts) never moved.
+            # Fix: bleed a fraction of the hot signal into the mean, where the fraction
+            # is derived entirely from the player's own statistical profile — no hardcoding.
+            #
+            # std_est   — estimated pts std-dev from the quantile CI band.
+            #             The q10→q90 range spans ≈2.56σ for a normal distribution,
+            #             so std ≈ (q90 - q10) / 2.56.
+            # cv        — coefficient of variation = std / mean.
+            #             A star who regularly swings ±10 pts has high CV (streaky);
+            #             a consistent role player has low CV (predictable).
+            # min_rel   — minutes reliability. Bench players on 15 min have volatile
+            #             samples driven by rotation decisions, not form. Normalise to
+            #             32 min (a full starter load) so signal weight degrades below that.
+            # hot_weight — how much of the hot signal to trust for THIS player.
+            #             Naturally 0 for perfectly consistent players, up to 0.65 cap.
+            #
+            # assists track form at ~40% of the pts rate (more predictable stat).
+            if hot != 1.0 and player.pts_avg > 4.0:
+                _pts_ci_range = preds["pts"]["ceiling"] - preds["pts"]["floor"]
+                _std_est      = max(0.5, _pts_ci_range / 2.56)
+                _cv           = _std_est / max(1.0, player.pts_avg)
+                # usage_rate is the best available proxy for role responsibility:
+                # 0.28 ≈ typical "full starter load" — normalise to that baseline.
+                _min_rel      = min(1.0, player.usage_rate / 0.28) if player.usage_rate > 0 else 0.5
+                _hot_weight   = min(0.65, _cv * _min_rel * 1.5)
+                proj_pts = round(proj_pts * (1.0 + (hot - 1.0) * _hot_weight), 1)
+                proj_ast = round(proj_ast * (1.0 + (hot - 1.0) * _hot_weight * 0.40), 1)
 
-            # ── Playoff star elevation ─────────────────────────────────────────────
-            # XGBoost was trained mostly on regular season data. Stars and starters
-            # measurably elevate in playoff intensity — higher usage, more isolation,
-            # more FTAs, and more clutch time. This shifts the internal distribution
-            # so stars absorb more of the team total in _apply_scale.
-            #   star:    +10% — primary options in crunch time
-            #   starter: +6%  — secondary options with elevated responsibility
-            # Role/bench players NOT boosted: their role doesn't expand in playoffs.
-            if is_playoffs and player.rotation_role in ("star", "starter"):
-                _playoff_star_boost = {"star": 1.10, "starter": 1.06}
-                _pb = _playoff_star_boost[player.rotation_role]
-                proj_pts = round(proj_pts * _pb, 1)
-                proj_ast = round(proj_ast * (_pb * 0.85 + 0.15), 1)  # smaller ast boost
+            # ── Data-driven playoff elevation ──────────────────────────────────────
+            #
+            # XGBoost was trained mostly on regular season data and undershoots stars
+            # in playoff intensity. Instead of guessing a fixed "+10% for stars", we
+            # query the actual avg(playoff_pts) / avg(rs_pts) ratio per usage bucket
+            # from the DB (cached at startup in _PLAYOFF_LIFT_CACHE).
+            # Usage rate bucketing mirrors the rotation_role labels used at runtime:
+            #   usg > 28% → star | 19-28% → starter | 12-19% → rotation | <12% → bench
+            # Clamped to [0.92, 1.20] to prevent extreme extrapolation.
+            if is_playoffs and player.pts_avg > 4.0:
+                _lift = _get_playoff_lift(player.rotation_role)
+                proj_pts = round(proj_pts * _lift, 1)
+                # Assists scale at 70% of pts lift (playmaking role grows slightly less)
+                proj_ast = round(proj_ast * (1.0 + (_lift - 1.0) * 0.70), 1)
 
-            # ── Player projection ceiling ──────────────────────────────────────────
-            # Cap output at season_avg × role_multiplier to prevent unrealistic outliers.
-            # Playoff ceiling is wider (stars CAN score 30+ in elimination games).
-            # Only applied when we have meaningful season data (pts_avg > 4.0).
-            if is_playoffs:
-                _PROJ_ROLE_CEILING = {
-                    "star":     1.55,  # playoff stars regularly exceed season averages
-                    "starter":  1.45,
-                    "rotation": 1.30,
-                    "bench":    1.18,
-                }
-            else:
-                _PROJ_ROLE_CEILING = {
-                    "star":     1.40,
-                    "starter":  1.35,
-                    "rotation": 1.25,
-                    "bench":    1.15,
-                }
+            # ── σ-based projection ceiling ─────────────────────────────────────────
+            #
+            # Instead of "season_avg × role_constant", cap at:
+            #   pts_cap = pts_avg + sigma_cap × std_est
+            # where std_est comes from the player's own CI band (see hot_weight above).
+            # This is the statistical meaning of "don't expect a 99th-percentile game":
+            #   sigma_cap 2.0  → 97.7th percentile  (regular season)
+            #   sigma_cap 2.5  → 99.4th percentile  (playoffs — more extreme outcomes allowed)
+            # Completely player-specific: a consistent bench player (small std_est) gets
+            # a tight cap; a high-variance star gets a naturally wide cap.
             if player.pts_avg > 4.0:
-                _role_mult = _PROJ_ROLE_CEILING.get(player.rotation_role, 1.25)
-                _pts_cap   = round(player.pts_avg * _role_mult, 1)
-                proj_pts   = min(proj_pts, _pts_cap)
+                _pts_ci_range = preds["pts"]["ceiling"] - preds["pts"]["floor"]
+                _std_est      = max(0.5, _pts_ci_range / 2.56)
+                _sigma_cap    = 2.5 if is_playoffs else 2.0
+                _pts_cap      = round(player.pts_avg + _sigma_cap * _std_est, 1)
+                proj_pts      = min(proj_pts, _pts_cap)
 
             # Quantile CI bands — statistically grounded floor (q10) and ceiling (q90).
             # Hot players stretch the ceiling further; cold players widen the floor.
