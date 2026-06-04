@@ -240,6 +240,65 @@ class LiveGameService:
                     else (context.away_team.players or startup.away_team.players)
                 )
 
+                # ── Overlay season averages onto live players ─────────────────────
+                # Live boxscore players have real game stats (points=30, assists=8, etc.)
+                # but pts_avg/ast_avg/reb_avg are 0 because the boxscore endpoint doesn't
+                # provide season averages. The form-first prediction model needs these to
+                # anchor projections (form_pts = pts_avg × hot_factor).
+                # Fix: for each live player, look up their matching startup player by
+                # player_id and copy the season-average fields.
+                def _overlay_season_avgs(live_list, startup_list):
+                    if not startup_list:
+                        return live_list
+                    startup_map = {p.player_id: p for p in startup_list}
+                    result = []
+                    for lp in live_list:
+                        sp = startup_map.get(lp.player_id)
+                        if sp is None:
+                            result.append(lp)
+                            continue
+                        # Copy season avg fields from startup; keep live game stats
+                        result.append(dc_replace(
+                            lp,
+                            pts_avg=sp.pts_avg if sp.pts_avg > 0 else lp.pts_avg,
+                            ast_avg=sp.ast_avg if sp.ast_avg > 0 else lp.ast_avg,
+                            reb_avg=sp.reb_avg if sp.reb_avg > 0 else lp.reb_avg,
+                            stl_avg=sp.stl_avg if sp.stl_avg > 0 else lp.stl_avg,
+                            blk_avg=sp.blk_avg if sp.blk_avg > 0 else lp.blk_avg,
+                            tov_avg=sp.tov_avg if sp.tov_avg > 0 else lp.tov_avg,
+                            fg3m_avg=sp.fg3m_avg if sp.fg3m_avg > 0 else lp.fg3m_avg,
+                            # Also use startup's usage_rate (more stable than single-game calc)
+                            usage_rate=sp.usage_rate if sp.usage_rate > 0 else lp.usage_rate,
+                            # Preserve usage-rate-based role we already computed for live player
+                        ))
+                    return result
+
+                if _has_live_stats(home_players):
+                    home_players = _overlay_season_avgs(home_players, startup.home_team.players)
+                if _has_live_stats(away_players):
+                    away_players = _overlay_season_avgs(away_players, startup.away_team.players)
+
+                # Re-classify rotation_role after usage_rate overlay.
+                # Uses same adjusted thresholds as nba_api_service.py (0.265 vs 0.28)
+                # to compensate for the approximation formula underestimating usage.
+                # pts_avg > 20 acts as a secondary star signal.
+                def _reclassify_roles(players):
+                    out = []
+                    for p in players:
+                        if p.availability_status == "dnp":
+                            out.append(p)
+                            continue
+                        u = p.usage_rate
+                        pts = p.pts_avg
+                        role = ("star"     if u > 0.265 or pts > 20.0 else
+                                "starter"  if u > 0.18  or pts > 11.0 else
+                                "rotation" if u > 0.11  else "bench")
+                        out.append(dc_replace(p, rotation_role=role))
+                    return out
+
+                home_players = _reclassify_roles(home_players)
+                away_players = _reclassify_roles(away_players)
+
                 # Always inject startup team ratings and Vegas totals — the live boxscore
                 # context computes ratings from partial scores (score=0 pre-game → off_rating=114),
                 # while startup fetched the real season OffRtg/DefRtg/Pace for every team.
@@ -262,6 +321,13 @@ class LiveGameService:
                     home_vegas_total=startup.home_vegas_total,
                     away_vegas_total=startup.away_vegas_total,
                 )
+
+            # DB enrichment: always populate pts_avg/usage_rate for players
+            # that are still at 0 after the startup-overlay step.  This covers
+            # historical games, pre-season tests, and any game where the live
+            # API didn't return season-average stats.
+            nba_api_service._enrich_players_from_db(context.home_team)
+            nba_api_service._enrich_players_from_db(context.away_team)
             return context, scoreboard_game
         except StopIteration:
             pass
@@ -377,9 +443,12 @@ class LiveGameService:
             not_playing_reason = player.get("notPlayingReason")
             not_playing_description = player.get("notPlayingDescription")
             availability_status = "dnp" if not played and (not_playing_reason or not_playing_description) else "available"
-            rotation_role = "starter" if player.get("starter") else "bench"
             if availability_status == "dnp":
                 rotation_role = "dnp"
+            else:
+                # Assign rotation_role later based on usage_rate (after it's computed).
+                # Placeholder — will be overwritten below.
+                rotation_role = "bench"
 
             field_goal_pct = self._normalize_pct(stats.get("fieldGoalsPercentage"), 0.45)
             three_point_pct = self._normalize_pct(stats.get("threePointersPercentage"), 0.36)
@@ -390,6 +459,20 @@ class LiveGameService:
                 + self._safe_float(stats.get("turnovers"))
             )
             usage_rate = max(0.08, min(0.42, player_actions / team_actions))
+
+            # Usage-rate based role: adjusted threshold (0.265 vs 0.28) because
+            # the single-game action ratio underestimates true season usage by ~2%.
+            # Will be re-classified after season-avg overlay in _resolve_context.
+            if availability_status != "dnp":
+                if usage_rate > 0.265:
+                    rotation_role = "star"
+                elif usage_rate > 0.18:
+                    rotation_role = "starter"
+                elif usage_rate > 0.11:
+                    rotation_role = "rotation"
+                else:
+                    rotation_role = "bench"
+
             paint_proxy = self._safe_float(stats.get("twoPointersMade")) + self._safe_float(stats.get("freeThrowsAttempted")) * 0.3
             drive_frequency = min(0.34, paint_proxy / max(1.0, player_actions + 2))
             momentum = min(
@@ -405,6 +488,7 @@ class LiveGameService:
                     player_id=str(player.get("personId") or name.lower().replace(" ", "-")),
                     player_name=name,
                     team_id=str(team_payload.get("teamTricode") or team_payload.get("teamId") or "").lower(),
+                    rotation_role=rotation_role,
                     usage_rate=round(usage_rate, 3),
                     points=self._safe_float(stats.get("points")),
                     assists=self._safe_float(stats.get("assists")),

@@ -383,6 +383,27 @@ def _build_team_state_from_season_stats(team_raw: dict, score: int, season_playe
             fg3m_avg=fg3m_avg,
         ))
 
+    # ── Usage-rate based role classification ──────────────────────────────────
+    # Classify every player into star/starter/rotation/bench.
+    # The runtime usage_rate is approximated from season-avg FGA/FTA/TOV/MIN,
+    # which systematically underestimates by ~2% vs the actual NBA usg_pct.
+    # Threshold is set at 0.265 (vs 0.28 in the DB) to compensate.
+    # pts_avg > 20 acts as a secondary star signal (primary options always score).
+    #   star:     usage > 26.5% OR pts_avg > 20 — primary option, high variance
+    #   starter:  18% < usage ≤ 26.5% — normal starter load
+    #   rotation: 11% < usage ≤ 18% — rotation player
+    #   bench:    usage ≤ 11%  — limited role / garbage time
+    for p in players:
+        u = p.usage_rate
+        if u > 0.265 or p.pts_avg > 20.0:
+            p.rotation_role = "star"
+        elif u > 0.18 or p.pts_avg > 11.0:
+            p.rotation_role = "starter"
+        elif u > 0.11:
+            p.rotation_role = "rotation"
+        else:
+            p.rotation_role = "bench"
+
     return TeamGameState(
         team_id=team_id,
         team_name=team_name,
@@ -427,6 +448,167 @@ def _build_minimal_team_state(team_raw: dict, score: int, ratings: dict[str, dic
         adjustment_discipline=0.65,
         players=[],
     )
+
+
+def _enrich_players_with_season_avgs(team: "TeamGameState", season_players: list[dict]) -> None:
+    """
+    Overlay season-average fields onto players built from a live/final boxscore.
+
+    Boxscore players have correct live game stats (points=30, assists=8…) but
+    usage_rate=0.20 (hardcoded) and pts_avg=0. The form-first prediction model
+    uses pts_avg as its anchor, so we must populate it from the season-stats feed.
+
+    Mutates team.players in-place (slots=True allows attribute assignment).
+    """
+    stats_map = {str(p.get("PLAYER_ID", "")): p for p in season_players}
+    for player in team.players:
+        sp = stats_map.get(player.player_id)
+        if sp is None:
+            continue
+        min_avg = float(sp.get("MIN") or 0)
+        if min_avg < 1.0:
+            continue
+        fga_avg   = float(sp.get("FGA")  or 0)
+        fta_avg   = float(sp.get("FTA")  or 0)
+        tov_avg   = float(sp.get("TOV")  or 0)
+        pts_avg   = float(sp.get("PTS")  or 0)
+        ast_avg   = float(sp.get("AST")  or 0)
+        reb_avg   = float(sp.get("REB")  or 0)
+        stl_avg   = float(sp.get("STL")  or 0)
+        blk_avg   = float(sp.get("BLK")  or 0)
+        fg3m_avg  = float(sp.get("FG3M") or 0)
+        possessions_used = fga_avg + 0.44 * fta_avg + tov_avg
+        usage_rate = min(0.38, max(0.08, (possessions_used * 0.48) / max(1.0, min_avg)))
+        # Role classification — same thresholds as _build_team_state_from_season_stats
+        if usage_rate > 0.265 or pts_avg > 20.0:
+            role = "star"
+        elif usage_rate > 0.18 or pts_avg > 11.0:
+            role = "starter"
+        elif usage_rate > 0.11:
+            role = "rotation"
+        else:
+            role = "bench"
+        # Write back — slots allows assignment of existing fields
+        player.pts_avg      = pts_avg
+        player.ast_avg      = ast_avg
+        player.reb_avg      = reb_avg
+        player.stl_avg      = stl_avg
+        player.blk_avg      = blk_avg
+        player.tov_avg      = tov_avg
+        player.fg3m_avg     = fg3m_avg
+        player.usage_rate   = round(usage_rate, 3)
+        player.rotation_role = role
+
+
+def _enrich_players_from_db(team: "TeamGameState") -> int:
+    """
+    DB-backed enrichment fallback: populate pts_avg and related averages from
+    nba_training.db for any player whose pts_avg is still 0 after the live-API
+    enrichment step.
+
+    Uses the most recent Regular Season in the DB (ORDER BY season DESC) so the
+    stats are always from the latest completed season — even when the live NBA
+    stats API is unavailable, returns stale data, or doesn't cover a historical
+    game that the server is demonstrating.
+
+    Returns the number of players enriched.
+    """
+    import sqlite3 as _sqlite3
+    import pathlib as _pathlib
+
+    players_needing = [p for p in team.players if (p.pts_avg or 0) == 0]
+    if not players_needing:
+        return 0
+
+    _db = _pathlib.Path(__file__).parent.parent.parent / "data" / "nba_training.db"
+    if not _db.exists():
+        logger.warning("nba_training.db not found — DB enrichment skipped.")
+        return 0
+
+    pids = [p.player_id for p in players_needing]
+    placeholders = ",".join("?" * len(pids))
+
+    try:
+        conn = _sqlite3.connect(str(_db))
+        rows = conn.execute(f"""
+            SELECT
+                player_id,
+                season,
+                AVG(pts)     AS pts_avg,
+                AVG(ast)     AS ast_avg,
+                AVG(reb)     AS reb_avg,
+                AVG(stl)     AS stl_avg,
+                AVG(blk)     AS blk_avg,
+                AVG(tov)     AS tov_avg,
+                AVG(fg3m)    AS fg3m_avg,
+                AVG(usg_pct) AS usg_avg,
+                AVG(min)     AS min_avg,
+                COUNT(*)     AS gp
+            FROM player_game_logs
+            WHERE player_id IN ({placeholders})
+              AND season_type = 'Regular Season'
+              AND min >= 5
+            GROUP BY player_id, season
+            ORDER BY season DESC
+        """, pids).fetchall()
+        conn.close()
+    except Exception as exc:
+        logger.warning("DB enrichment query failed: %s", exc)
+        return 0
+
+    # Build map: player_id → most-recent-season row (first occurrence since ORDER BY season DESC)
+    stats_map: dict[str, dict] = {}
+    for row in rows:
+        pid = str(row[0])
+        if pid not in stats_map and int(row[11] or 0) >= 10:  # at least 10 games
+            stats_map[pid] = {
+                "pts_avg": float(row[2] or 0),
+                "ast_avg": float(row[3] or 0),
+                "reb_avg": float(row[4] or 0),
+                "stl_avg": float(row[5] or 0),
+                "blk_avg": float(row[6] or 0),
+                "tov_avg": float(row[7] or 0),
+                "fg3m_avg": float(row[8] or 0),
+                "usg_avg": float(row[9] or 0),
+                "min_avg": float(row[10] or 0),
+            }
+
+    enriched = 0
+    for player in players_needing:
+        sp = stats_map.get(player.player_id)
+        if sp is None:
+            continue
+
+        pts_avg   = sp["pts_avg"]
+        usg_avg   = sp["usg_avg"]
+
+        # Role classification — same thresholds as _enrich_players_with_season_avgs
+        if usg_avg > 0.265 or pts_avg > 20.0:
+            role = "star"
+        elif usg_avg > 0.18 or pts_avg > 11.0:
+            role = "starter"
+        elif usg_avg > 0.11:
+            role = "rotation"
+        else:
+            role = "bench"
+
+        player.pts_avg       = pts_avg
+        player.ast_avg       = sp["ast_avg"]
+        player.reb_avg       = sp["reb_avg"]
+        player.stl_avg       = sp["stl_avg"]
+        player.blk_avg       = sp["blk_avg"]
+        player.tov_avg       = sp["tov_avg"]
+        player.fg3m_avg      = sp["fg3m_avg"]
+        player.usage_rate    = round(usg_avg, 3) if usg_avg > 0 else player.usage_rate
+        player.rotation_role = role
+        enriched += 1
+
+    if enriched:
+        logger.info(
+            "DB enrichment: populated season avgs for %d/%d players on team %s",
+            enriched, len(players_needing), team.team_id,
+        )
+    return enriched
 
 
 def _apply_injury_report(team: "TeamGameState", injury_report: dict[str, str]) -> None:
@@ -527,6 +709,19 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
 
         home_score = int(home_raw.get("score") or 0)
         away_score = int(away_raw.get("score") or 0)
+        # Always fetch season stats — needed to populate pts_avg/usage_rate for the
+        # form-first prediction model regardless of which path builds the team.
+        home_team_id = int(home_raw.get("teamId") or 0)
+        away_team_id = int(away_raw.get("teamId") or 0)
+        try:
+            home_season_stats, away_season_stats = await asyncio.gather(
+                nba_live_client.fetch_player_season_stats(home_team_id),
+                nba_live_client.fetch_player_season_stats(away_team_id),
+            )
+        except Exception as exc_s:
+            logger.warning("Season stats fetch failed for %s (%s) — averages unavailable.", game_id, exc_s)
+            home_season_stats, away_season_stats = [], []
+
         try:
             box_data = await nba_live_client.fetch_boxscore(game_id)
             box = box_data.get("game", {})
@@ -538,23 +733,33 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
             away_score = int(away_box.get("score") or away_score)
             home_team = _build_team_state(home_box, home_score, team_ratings)
             away_team = _build_team_state(away_box, away_score, team_ratings)
-            logger.info("Boxscore loaded for %s — %d players", game_id, len(home_team.players) + len(away_team.players))
+            # Enrich boxscore players with season averages so pts_avg/usage_rate are correct.
+            # Without this, all players have usage_rate=0.20 (hardcoded in _build_player_state)
+            # and pts_avg=0, breaking the form-first prediction model.
+            if home_season_stats:
+                _enrich_players_with_season_avgs(home_team, home_season_stats)
+            if away_season_stats:
+                _enrich_players_with_season_avgs(away_team, away_season_stats)
+            logger.info("Boxscore loaded for %s — %d players (season avgs enriched)", game_id, len(home_team.players) + len(away_team.players))
         except Exception as exc:
             logger.warning("Boxscore unavailable for %s (%s) — fetching season averages.", game_id, exc)
             try:
-                home_team_id = int(home_raw.get("teamId") or 0)
-                away_team_id = int(away_raw.get("teamId") or 0)
-                home_stats, away_stats = await asyncio.gather(
-                    nba_live_client.fetch_player_season_stats(home_team_id),
-                    nba_live_client.fetch_player_season_stats(away_team_id),
-                )
-                home_team = _build_team_state_from_season_stats(home_raw, home_score, home_stats, team_ratings)
-                away_team = _build_team_state_from_season_stats(away_raw, away_score, away_stats, team_ratings)
+                if home_season_stats and away_season_stats:
+                    home_team = _build_team_state_from_season_stats(home_raw, home_score, home_season_stats, team_ratings)
+                    away_team = _build_team_state_from_season_stats(away_raw, away_score, away_season_stats, team_ratings)
+                else:
+                    raise ValueError("No season stats available")
                 logger.info("Season stats loaded for %s — %d players", game_id, len(home_team.players) + len(away_team.players))
             except Exception as exc2:
                 logger.warning("Season stats also unavailable for %s (%s) — no players.", game_id, exc2)
                 home_team = _build_minimal_team_state(home_raw, home_score, team_ratings)
                 away_team = _build_minimal_team_state(away_raw, away_score, team_ratings)
+
+        # DB enrichment fallback — always runs after any build path.
+        # Populates pts_avg/usage_rate/rotation_role for players still at 0
+        # (live API miss, historical game, or season stats unavailable).
+        _enrich_players_from_db(home_team)
+        _enrich_players_from_db(away_team)
 
         # Apply official injury report — overrides _recent_dnp for actively listed players
         if injury_report:
@@ -597,10 +802,15 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
                     for player in team_state.players:
                         if player.player_id in starters:
                             confirmed = starters[player.player_id]
-                            if confirmed and player.rotation_role not in ("star",):
+                            # Only adjust roles that usage-rate didn't already pin as
+                            # "star" or "starter" — ESPN lineup confirms bench players
+                            # who are playing, but should never demote a star.
+                            if confirmed and player.rotation_role in ("bench", "rotation"):
+                                # ESPN confirms this player is starting → at least starter
                                 player.rotation_role = "starter"
-                            elif not confirmed and player.rotation_role == "starter":
-                                player.rotation_role = "rotation"
+                            # Do NOT downgrade: a "star" or "starter" who isn't on the
+                            # ESPN confirmed list is still a star/starter by usage — the
+                            # lineup API may just be incomplete pre-tip.
                 logger.info("Confirmed starters applied for %s: %d players", game_id, len(starters))
         except Exception as espn_exc:
             logger.debug("ESPN injury/lineup supplement skipped: %s", espn_exc)
