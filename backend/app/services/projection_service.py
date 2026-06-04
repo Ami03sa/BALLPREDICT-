@@ -36,6 +36,63 @@ def _save_score_cache(cache: dict) -> None:
 _pregame_scores: dict[str, list[int]] = _load_score_cache()
 
 
+# ── Playoff scoring ratio ──────────────────────────────────────────────────────
+# Computed once from DB and cached. Typically 0.94–0.97 — playoffs score ~5%
+# less than regular season due to slower pace, tighter defensive schemes,
+# and targeted opponent prep. Applied as a multiplier (not a fixed subtraction)
+# so the calibration scales with how high the projection is.
+_PLAYOFF_RATIO_CACHE: dict = {}
+
+def _fetch_playoff_scoring_ratio() -> float:
+    """
+    Returns avg(playoff team score) / avg(RS team score) from the training DB.
+
+    Clamped to [0.93, 0.99] — should be ~0.95 in practice, consistent across
+    all seasons in our data.  Returns 1.0 on any DB error (safe no-op).
+    """
+    global _PLAYOFF_RATIO_CACHE
+    if "ratio" in _PLAYOFF_RATIO_CACHE:
+        return _PLAYOFF_RATIO_CACHE["ratio"]
+    if not _DB_PATH.exists():
+        return 1.0
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        playoff_row = conn.execute(
+            """
+            SELECT AVG(team_pts) FROM (
+                SELECT game_id, SUM(pts) AS team_pts
+                FROM player_game_logs
+                WHERE season_type = 'Playoffs'
+                GROUP BY game_id
+            )
+            """
+        ).fetchone()
+        rs_row = conn.execute(
+            """
+            SELECT AVG(team_pts) FROM (
+                SELECT game_id, SUM(pts) AS team_pts
+                FROM player_game_logs
+                WHERE season_type = 'Regular Season'
+                GROUP BY game_id
+            )
+            """
+        ).fetchone()
+        conn.close()
+        if playoff_row and rs_row and playoff_row[0] and rs_row[0]:
+            ratio = float(playoff_row[0]) / float(rs_row[0])
+            ratio = max(0.93, min(0.99, ratio))
+            _PLAYOFF_RATIO_CACHE["ratio"] = ratio
+            logger.info(
+                "Playoff scoring ratio: %.4f  (playoff %.1f pts vs RS %.1f pts/team-game)",
+                ratio, playoff_row[0], rs_row[0],
+            )
+            return ratio
+    except Exception:
+        pass
+    _PLAYOFF_RATIO_CACHE["ratio"] = 1.0
+    return 1.0
+
+
 def _fetch_player_volatility(player_ids: list[str]) -> dict[str, dict]:
     """
     Returns per-player volatility from last 30 qualifying games, weighted toward recency.
@@ -1000,7 +1057,7 @@ def _usage_boost(projections: list, avg_min: dict, play_prob: dict) -> float:
     active_pts = sum(p.projected_stats.mean.points for p in active)
     if active_pts < 1.0:
         return 1.0
-    return min(1.25, (active_pts + dnp_pts) / active_pts)
+    return min(1.18, (active_pts + dnp_pts) / active_pts)
 
 
 def _rescale_player_pts(proj: PlayerProjection, scale: float) -> PlayerProjection:
@@ -1594,6 +1651,36 @@ class ProjectionService:
             # 3 days = +1%, 4+ days = +0.5% (can get rusty)
             player_estimate *= rest_factor
 
+            # ── Playoff scoring calibration ───────────────────────────────────
+            # Playoffs score ~5% less than regular season — slower pace, tighter
+            # defensive schemes, targeted opponent prep. We compute the exact
+            # ratio from the training DB (not a fixed constant) so it stays
+            # current as more playoff data is ingested.
+            #
+            # The calibration fades as series evidence accumulates:
+            #   Game 1 (series_games=0): full ratio applied — maximum unknown,
+            #     lean on the historical prior (RS→playoff deflation).
+            #   Game 4+ (series_games≥4): ratio fades to 1.0 — actual series
+            #     box scores are now more informative than any prior calibration.
+            #
+            # Formula (no hard-coded pts subtracted):
+            #   series_decay    = min(1.0, series_games / 4)
+            #   effective_ratio = 1 − (1 − playoff_ratio) × (1 − series_decay)
+            #   player_estimate × effective_ratio
+            #
+            # Example (playoff_ratio=0.9488, series_games=0):
+            #   effective_ratio = 1 − (1−0.9488)×1.0 = 0.9488  (full ~5% down)
+            # Example (series_games=2):
+            #   effective_ratio = 1 − 0.0512×0.5     = 0.9744  (half calibration)
+            # Example (series_games=4):
+            #   effective_ratio = 1 − 0.0512×0.0     = 1.0000  (series data takes over)
+            if is_playoffs:
+                _sg_early = (series_eff or {}).get("games_played", 0)
+                _playoff_ratio  = _fetch_playoff_scoring_ratio()
+                _series_decay   = min(1.0, _sg_early / 4.0)
+                _effective_ratio = 1.0 - (1.0 - _playoff_ratio) * (1.0 - _series_decay)
+                player_estimate *= _effective_ratio
+
             # ── Road trip fatigue ─────────────────────────────────────────────
             # Consecutive away games drain energy — penalty added flat after blend
 
@@ -1885,11 +1972,13 @@ class ProjectionService:
         # Prevents bench/rotation players from absorbing a star's full load —
         # in reality, the points are redistributed in smaller pieces across many players,
         # not all flowing to one role player.
-        #   star:     1.50× their XGBoost base (primary option, can truly step up)
-        #   starter:  1.40× (secondary options take on more, but not a full star load)
-        #   rotation: 1.30× (rotation players get meaningful extra minutes, not stars)
-        #   bench:    1.20× (spot minutes — cannot replicate a star's production)
-        _ROLE_BOOST_CAP = {"star": 1.50, "starter": 1.40, "rotation": 1.30, "bench": 1.20}
+        #   star:     1.40× their XGBoost base (primary option, can truly step up)
+        #   starter:  1.30× (secondary options take on more, but not a full star load)
+        #   rotation: 1.20× (rotation players get meaningful extra minutes, not stars)
+        #   bench:    1.12× (spot minutes — cannot replicate a star's production)
+        # Tightened from {1.50/1.40/1.30/1.20} — the wider caps allowed bench/rotation
+        # players to absorb too much DNP load, over-inflating team totals.
+        _ROLE_BOOST_CAP = {"star": 1.40, "starter": 1.30, "rotation": 1.20, "bench": 1.12}
 
         def _apply_scale(projections: list, team_total: int) -> list[PlayerProjection]:
             active = [p for p in projections if p.availability_status != "dnp"]

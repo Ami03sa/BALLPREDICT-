@@ -407,24 +407,49 @@ def _rest_days(player_id: str) -> float:
 
 
 def _player_vs_opp(player_id: str, opponent_id: str) -> dict:
-    """Historical stats for this player specifically against this opponent team."""
+    """
+    Historical stats for this player against this specific opponent.
+
+    Filtered to the last 2 seasons only so that stale roster-era games
+    (e.g. Wembanyama vs old-lineup NYK) don't pollute the matchup signal.
+    Also returns '_n_games' so _build_features can compute a confidence
+    weight — a 2-game sample gets less trust than a 7-game sample.
+    """
     if not _DB_PATH.exists():
         return {}
     try:
         conn = sqlite3.connect(str(_DB_PATH))
+        # Determine the cutoff: last 2 seasons (current + previous)
+        season_row = conn.execute(
+            "SELECT MAX(season) FROM player_game_logs"
+        ).fetchone()
+        if season_row and season_row[0]:
+            cur = season_row[0]       # e.g. "2025-26"
+            yr  = int(cur.split("-")[0])
+            # previous season string e.g. "2024-25"
+            prev = f"{yr - 1}-{yr % 100:02d}"
+        else:
+            prev = "2000-01"          # fallback: accept everything
+
         rows = conn.execute(
             """
             SELECT pts, ast, reb
             FROM player_game_logs
             WHERE player_id = ? AND opponent_abbreviation = ? AND min > 0
+              AND season >= ?
             ORDER BY game_date DESC LIMIT 10
             """,
-            (player_id, opponent_id.upper()),
+            (player_id, opponent_id.upper(), prev),
         ).fetchall()
         conn.close()
         if not rows:
             return {}
-        return {"pts": [r[0] for r in rows], "ast": [r[1] for r in rows], "reb": [r[2] for r in rows]}
+        return {
+            "pts":      [r[0] for r in rows],
+            "ast":      [r[1] for r in rows],
+            "reb":      [r[2] for r in rows],
+            "_n_games": len(rows),   # confidence signal for _build_features
+        }
     except Exception:
         return {}
 
@@ -629,12 +654,28 @@ def _build_features(
     row["away_pts_avg"] = splits.get("away_pts_avg") or season_pts
 
     # Head-to-head history vs this specific opponent
+    # Confidence weight: scales from 0 (no recent H2H games) to 1.0 (5+ games).
+    # Below 5 recent games the H2H features are blended toward the player's
+    # season average so a thin 2-game sample doesn't dominate the prediction.
+    #   0 games → pure season avg (no matchup info)
+    #   2 games → 40% H2H + 60% season avg
+    #   3 games → 60% H2H + 40% season avg
+    #   5+ games → full H2H trust
     h2h = h2h or {}
+    h2h_n          = int(h2h.get("_n_games", len(h2h.get("pts", []))))
+    h2h_confidence = min(1.0, h2h_n / 5.0)
     for stat in ["pts", "ast", "reb"]:
-        vals = h2h.get(stat, [])
+        vals     = h2h.get(stat, [])
         fallback = row.get(f"{stat}_season_avg", 0.0)
-        row[f"{stat}_vs_opp_last3"] = _rolling(vals, 3) if vals else fallback
-        row[f"{stat}_vs_opp_avg"]   = float(np.mean(vals)) if vals else fallback
+        if vals:
+            raw_last3 = _rolling(vals, 3)
+            raw_avg   = float(np.mean(vals))
+            # Blend H2H signal toward season avg proportional to confidence
+            row[f"{stat}_vs_opp_last3"] = raw_last3 * h2h_confidence + fallback * (1 - h2h_confidence)
+            row[f"{stat}_vs_opp_avg"]   = raw_avg   * h2h_confidence + fallback * (1 - h2h_confidence)
+        else:
+            row[f"{stat}_vs_opp_last3"] = fallback
+            row[f"{stat}_vs_opp_avg"]   = fallback
 
     # Team ELO — captures cumulative team quality better than season ratings
     row["team_elo"] = team_elo
@@ -892,6 +933,22 @@ class PredictionEngine:
                         proj_ast = blended
                     elif stat_key == "fg3m":
                         proj_fg3m = blended
+
+            # ── Player projection ceiling ──────────────────────────────────────────
+            # Cap XGBoost + prop-blended output at season_avg × role_multiplier.
+            # Prevents model from projecting a player way above their established
+            # season ceiling just because of a favorable matchup or hot signal.
+            # Only applied when we have meaningful season data (pts_avg > 4.0).
+            _PROJ_ROLE_CEILING = {
+                "star":     1.40,  # star can realistically score 40% above average
+                "starter":  1.35,  # starter up to 35% above their season mean
+                "rotation": 1.25,  # rotation player: tighter ceiling
+                "bench":    1.15,  # bench: smallest ceiling — spot minutes only
+            }
+            if player.pts_avg > 4.0:
+                _role_mult = _PROJ_ROLE_CEILING.get(player.rotation_role, 1.25)
+                _pts_cap   = round(player.pts_avg * _role_mult, 1)
+                proj_pts   = min(proj_pts, _pts_cap)
 
             # Quantile CI bands — statistically grounded floor (q10) and ceiling (q90).
             # Hot players stretch the ceiling further; cold players widen the floor.
