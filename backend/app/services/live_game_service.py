@@ -70,6 +70,8 @@ class LiveGameService:
                     "away_pace":    ctx.away_team.pace,
                     "home_vegas":   ctx.home_vegas_total,
                     "away_vegas":   ctx.away_vegas_total,
+                    # Date the game was played — used to expire the cache at midnight
+                    "game_date":    __import__("datetime").date.today().isoformat(),
                 }
             _GAME_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
             _GAME_CACHE_PATH.write_text(_json.dumps(payload, indent=2))
@@ -80,11 +82,13 @@ class LiveGameService:
     async def _bootstrap_from_cache(self) -> bool:
         """
         Load last known game(s) from disk and rebuild contexts using current
-        DB season averages.  Called when today's scoreboard is empty so the
-        app keeps showing the most recently played game until the next tip-off.
+        DB season averages.  Only restores if the cached game was played TODAY —
+        once the day rolls over the slate resets to empty so the app is ready
+        for the next game day.
         Returns True if at least one game was restored.
         """
         import json as _json
+        from datetime import date as _date
         if not _GAME_CACHE_PATH.exists():
             return False
         try:
@@ -94,6 +98,16 @@ class LiveGameService:
             return False
 
         if not payload:
+            return False
+
+        # Expire cache at midnight — only restore if every cached game was today.
+        today = _date.today().isoformat()
+        cached_dates = {meta.get("game_date", "") for meta in payload.values()}
+        if not all(d == today for d in cached_dates):
+            logger.info(
+                "Game cache is from a previous day (%s) — slate will be empty until today's games start.",
+                ", ".join(cached_dates),
+            )
             return False
 
         from app.services.providers.nba_live_client import nba_live_client
@@ -200,8 +214,10 @@ class LiveGameService:
 
     async def bootstrap_demo_game(self) -> None:
         """Called on startup — fetches today's real NBA games from the public CDN.
-        If the scoreboard is empty (off-day between games), restores the last
-        known game from disk so the app stays live until the next tip-off."""
+        If the scoreboard is empty but today's game was already played (final),
+        restores the final score from disk so it stays visible for the rest of
+        the day.  Once the date rolls over the cache is ignored and the slate
+        resets to empty, ready for the next game day."""
         try:
             slate, contexts = await nba_api_service.fetch_today_slate_and_contexts()
             if contexts:
