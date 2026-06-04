@@ -934,17 +934,51 @@ class PredictionEngine:
                     elif stat_key == "fg3m":
                         proj_fg3m = blended
 
+            # ── Hot-factor mean nudge ──────────────────────────────────────────────
+            # hot_factor was previously only used to widen/narrow CI bands.
+            # Now 55% of the hot signal also nudges the *mean* prediction up/down.
+            # hot=1.35 (star on a roll) → proj_pts × 1.19
+            # hot=0.80 (cold stretch)   → proj_pts × 0.89
+            # Assists track form at half the pts rate (playmaking is more consistent).
+            if hot != 1.0:
+                _hot_mean_blend = 0.55
+                _hot_pts_mult = 1.0 + (hot - 1.0) * _hot_mean_blend
+                _hot_ast_mult = 1.0 + (hot - 1.0) * 0.28  # assists less volatile
+                proj_pts = round(proj_pts * _hot_pts_mult, 1)
+                proj_ast = round(proj_ast * _hot_ast_mult, 1)
+
+            # ── Playoff star elevation ─────────────────────────────────────────────
+            # XGBoost was trained mostly on regular season data. Stars and starters
+            # measurably elevate in playoff intensity — higher usage, more isolation,
+            # more FTAs, and more clutch time. This shifts the internal distribution
+            # so stars absorb more of the team total in _apply_scale.
+            #   star:    +10% — primary options in crunch time
+            #   starter: +6%  — secondary options with elevated responsibility
+            # Role/bench players NOT boosted: their role doesn't expand in playoffs.
+            if is_playoffs and player.rotation_role in ("star", "starter"):
+                _playoff_star_boost = {"star": 1.10, "starter": 1.06}
+                _pb = _playoff_star_boost[player.rotation_role]
+                proj_pts = round(proj_pts * _pb, 1)
+                proj_ast = round(proj_ast * (_pb * 0.85 + 0.15), 1)  # smaller ast boost
+
             # ── Player projection ceiling ──────────────────────────────────────────
-            # Cap XGBoost + prop-blended output at season_avg × role_multiplier.
-            # Prevents model from projecting a player way above their established
-            # season ceiling just because of a favorable matchup or hot signal.
+            # Cap output at season_avg × role_multiplier to prevent unrealistic outliers.
+            # Playoff ceiling is wider (stars CAN score 30+ in elimination games).
             # Only applied when we have meaningful season data (pts_avg > 4.0).
-            _PROJ_ROLE_CEILING = {
-                "star":     1.40,  # star can realistically score 40% above average
-                "starter":  1.35,  # starter up to 35% above their season mean
-                "rotation": 1.25,  # rotation player: tighter ceiling
-                "bench":    1.15,  # bench: smallest ceiling — spot minutes only
-            }
+            if is_playoffs:
+                _PROJ_ROLE_CEILING = {
+                    "star":     1.55,  # playoff stars regularly exceed season averages
+                    "starter":  1.45,
+                    "rotation": 1.30,
+                    "bench":    1.18,
+                }
+            else:
+                _PROJ_ROLE_CEILING = {
+                    "star":     1.40,
+                    "starter":  1.35,
+                    "rotation": 1.25,
+                    "bench":    1.15,
+                }
             if player.pts_avg > 4.0:
                 _role_mult = _PROJ_ROLE_CEILING.get(player.rotation_role, 1.25)
                 _pts_cap   = round(player.pts_avg * _role_mult, 1)
