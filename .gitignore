@@ -19,3 +19,6 @@ backend/data/models/
 backend/data/score_cache.json
 backend/data/vegas_cache.json
 backend/data/refresh.log
+backend/data/backtest_results.json
+*.db-shm
+*.db-wal

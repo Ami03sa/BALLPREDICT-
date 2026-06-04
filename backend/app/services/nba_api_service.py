@@ -633,10 +633,6 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
     from app.services.providers.nba_live_client import nba_live_client
 
     # Fetch injury report and team ratings in parallel.
-    # Odds API (paid) has been removed — ESPN BET is the sole odds source.
-    # This keeps the pipeline stable across quota resets and doesn't require
-    # a paid subscription. When we re-enable a paid provider later, just
-    # restore the fetch_vegas_totals(settings.odds_api_key) call here.
     injury_report, team_ratings = await asyncio.gather(
         nba_live_client.fetch_injury_report(),
         nba_live_client.fetch_team_ratings(),

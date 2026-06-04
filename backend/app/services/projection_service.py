@@ -1398,7 +1398,6 @@ def _run_ot_simulation(
 
 
 class ProjectionService:
-    pass
 
     def build_snapshot(
         self,
@@ -1691,23 +1690,6 @@ class ProjectionService:
                 player_estimate *= _effective_ratio
             # ─────────────────────────────────────────────────────────────────
 
-            # ── Road trip fatigue ─────────────────────────────────────────────
-            # Consecutive away games drain energy — penalty added flat after blend
-
-            # ── Motivation factor ─────────────────────────────────────────────
-            # Teams fighting for seeding/survival score more; coasting teams less
-
-            # ── H2H matchup factor ────────────────────────────────────────────
-            # How this team historically scores vs THIS specific opponent
-            # Some teams just own certain matchups regardless of record
-
-            # ── Playoff intensity boost — combinatorial leverage formula ──────
-            # Replaces hardcoded constants with a data-driven formula:
-            #   leverage     = P(win series|win game) − P(win series|lose game)
-            #   series_win_p = P(win series from current state) at 50/50 per game
-            #   trailing: motivation = leverage × series_win_p × 1.5 × 32
-            #   leading:  motivation = leverage × (1−series_win_p) × 0.6 × 40
-            # Calibrated so 2-3 elim → +6 pts, 3-2 closeout → +3 pts, sweep → −2 pts.
             intensity_boost = _compute_series_intensity(team_wins, opp_wins, is_playoffs)
 
             # ── Regular season: simple model, no series complexity ──────────

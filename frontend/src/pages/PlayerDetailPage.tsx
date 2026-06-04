@@ -14,14 +14,6 @@ import { InsightPanel } from "../components/InsightPanel";
 import { fetchPlayerDetail } from "../lib/api";
 import type { BreakoutStats, PlayerDetail } from "../types";
 
-function DetailStatCard({ label, value, accent }: { label: string; value: string; accent?: boolean }) {
-  return (
-    <div className="rounded-3xl border border-white/8 bg-panelAlt/80 p-5">
-      <p className="text-xs uppercase tracking-[0.25em] text-muted">{label}</p>
-      <p className={`mt-2 font-display text-3xl ${accent ? "text-electric" : "text-white"}`}>{value}</p>
-    </div>
-  );
-}
 
 function BreakoutPanel({ stats }: { stats: BreakoutStats }) {
   const pct = Math.round(stats.breakoutProbability * 100);

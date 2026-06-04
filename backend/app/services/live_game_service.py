@@ -10,14 +10,11 @@ import httpx
 from fastapi import HTTPException
 
 from app.schemas.game import (
-    ConfidenceBand,
     GameSnapshot,
     PlayerDetailResponse,
     PlayerProjection,
     PlayerQuarterProjection,
     SimulationResponse,
-    StatLine,
-    TeamProjection,
 )
 from app.services import nba_api_service
 from app.services.nba_api_service import get_quarter_weights
@@ -27,35 +24,6 @@ from app.simulation.coaching_engine import coaching_engine
 from app.simulation.state import GameContext
 
 logger = logging.getLogger(__name__)
-
-_ZERO_STAT = StatLine()
-_ZERO_BAND = ConfidenceBand(low=_ZERO_STAT, mean=_ZERO_STAT, high=_ZERO_STAT)
-
-
-def _zero_team_proj(proj: TeamProjection) -> TeamProjection:
-    return proj.model_copy(
-        update={
-            "projected_score": (0, 0, 0, 0),
-            "final_score_mean": 0,
-            "final_score_ci": (0, 0),
-            "win_probability": 0.5,
-        }
-    )
-
-
-def _zero_player_proj(proj: PlayerProjection) -> PlayerProjection:
-    return proj.model_copy(update={"projected_stats": _ZERO_BAND})
-
-
-def _zero_snapshot(snapshot: GameSnapshot) -> GameSnapshot:
-    """Zero out all predicted values; keep live_stats and game state intact."""
-    return snapshot.model_copy(
-        update={
-            "home_team": _zero_team_proj(snapshot.home_team),
-            "away_team": _zero_team_proj(snapshot.away_team),
-            "player_projections": [_zero_player_proj(p) for p in snapshot.player_projections],
-        }
-    )
 
 
 _GAME_CACHE_PATH = (
@@ -259,9 +227,6 @@ class LiveGameService:
             except Exception:
                 pass
 
-    def _build_context(self, **kwargs) -> GameContext:
-        return GameContext(**kwargs)
-
     async def list_live_games(self) -> list[dict]:
         try:
             scoreboard = await nba_live_client.fetch_scoreboard()
@@ -292,7 +257,6 @@ class LiveGameService:
 
     async def list_slate_games(self) -> list[dict]:
         from datetime import date, timedelta
-        import httpx
 
         results: list[dict] = []
 
