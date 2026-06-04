@@ -90,9 +90,11 @@ export function PlayerProjectionTable({
 }) {
   const orderedPlayers = [...players].sort((left, right) => {
     const statusWeight = (player: PlayerProjection) => {
-      if (player.availabilityStatus === "dnp") return 2;
-      if (player.rotationRole === "starter") return 0;
-      return 1;
+      if (player.availabilityStatus === "dnp") return 3;
+      if (player.rotationRole === "star") return 0;      // stars always first
+      if (player.rotationRole === "starter") return 1;
+      if (player.rotationRole === "rotation") return 2;
+      return 2; // bench same as rotation
     };
     return statusWeight(left) - statusWeight(right);
   });

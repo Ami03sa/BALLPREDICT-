@@ -149,6 +149,9 @@ export async function fetchSnapshot(gameId: string): Promise<Snapshot> {
     winProbabilitySeries: data.win_probability_series,
     isCloseGame: data.is_close_game ?? false,
     predictedMargin: data.predicted_margin ?? 0,
+    blowoutAlert: data.blowout_alert ?? false,
+    blowoutScore: data.blowout_score ?? null,
+    blowoutSignals: data.blowout_signals ?? [],
     otSimulation: data.ot_simulation ? {
       homeOtPts: data.ot_simulation.home_ot_pts,
       awayOtPts: data.ot_simulation.away_ot_pts,

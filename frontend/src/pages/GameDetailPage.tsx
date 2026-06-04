@@ -1,5 +1,6 @@
 import { useEffect, useState } from "react";
 import { fetchGamePreview, fetchSnapshot, resetPredictionCache } from "../lib/api";
+import { PlayerProjectionTable } from "../components/PlayerProjectionTable";
 import type { GamePreview, PlayerProjection, Snapshot } from "../types";
 
 // Local logo map
@@ -115,12 +116,16 @@ function PlayerRoster({
   players: PlayerProjection[];
   onOpenPlayer: (id: string) => void;
 }) {
+  const roleOrder = (role: string) => {
+    if (role === "star") return 0;
+    if (role === "starter") return 1;
+    if (role === "rotation") return 2;
+    return 3; // bench
+  };
   const sorted = [...players].sort((a, b) => {
     if (a.availabilityStatus === "dnp" && b.availabilityStatus !== "dnp") return 1;
     if (a.availabilityStatus !== "dnp" && b.availabilityStatus === "dnp") return -1;
-    if (a.rotationRole === "starter" && b.rotationRole !== "starter") return -1;
-    if (a.rotationRole !== "starter" && b.rotationRole === "starter") return 1;
-    return 0;
+    return roleOrder(a.rotationRole) - roleOrder(b.rotationRole);
   });
 
   return (
@@ -416,8 +421,13 @@ export function GameDetailPage({
     );
   }
 
-  const homePlayers = snapshot.playerProjections.filter((p) => p.teamId === snapshot.homeTeam.teamId);
-  const awayPlayers = snapshot.playerProjections.filter((p) => p.teamId === snapshot.awayTeam.teamId);
+  // Case-insensitive match — backend may return "NYK" for team but "nyk" for a player
+  const homePlayers = snapshot.playerProjections.filter(
+    (p) => p.teamId.toLowerCase() === snapshot.homeTeam.teamId.toLowerCase()
+  );
+  const awayPlayers = snapshot.playerProjections.filter(
+    (p) => p.teamId.toLowerCase() === snapshot.awayTeam.teamId.toLowerCase()
+  );
 
   const homePredictedScore = snapshot.homeTeam.finalScoreMean;
   const awayPredictedScore = snapshot.awayTeam.finalScoreMean;
@@ -478,10 +488,26 @@ export function GameDetailPage({
           onOpenPlayer={onOpenPlayer}
         />
 
+        <PlayerProjectionTable
+          players={awayPlayers}
+          teamName={preview.awayTeam.teamName}
+          teamId={snapshot.awayTeam.teamId}
+          projectedTeamScore={awayPredictedScore}
+          onOpenPlayer={onOpenPlayer}
+        />
+
         <PlayerRoster
           teamName={preview.homeTeam.teamName}
           teamId={snapshot.homeTeam.teamId}
           players={homePlayers}
+          onOpenPlayer={onOpenPlayer}
+        />
+
+        <PlayerProjectionTable
+          players={homePlayers}
+          teamName={preview.homeTeam.teamName}
+          teamId={snapshot.homeTeam.teamId}
+          projectedTeamScore={homePredictedScore}
           onOpenPlayer={onOpenPlayer}
         />
       </div>
