@@ -1,6 +1,5 @@
 import { useEffect, useState } from "react";
 import { fetchGamePreview, fetchSnapshot, resetPredictionCache } from "../lib/api";
-import { PlayerProjectionTable } from "../components/PlayerProjectionTable";
 import type { GamePreview, PlayerProjection, Snapshot } from "../types";
 
 // Local logo map
@@ -488,26 +487,10 @@ export function GameDetailPage({
           onOpenPlayer={onOpenPlayer}
         />
 
-        <PlayerProjectionTable
-          players={awayPlayers}
-          teamName={preview.awayTeam.teamName}
-          teamId={snapshot.awayTeam.teamId}
-          projectedTeamScore={awayPredictedScore}
-          onOpenPlayer={onOpenPlayer}
-        />
-
         <PlayerRoster
           teamName={preview.homeTeam.teamName}
           teamId={snapshot.homeTeam.teamId}
           players={homePlayers}
-          onOpenPlayer={onOpenPlayer}
-        />
-
-        <PlayerProjectionTable
-          players={homePlayers}
-          teamName={preview.homeTeam.teamName}
-          teamId={snapshot.homeTeam.teamId}
-          projectedTeamScore={homePredictedScore}
           onOpenPlayer={onOpenPlayer}
         />
       </div>

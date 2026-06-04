@@ -183,24 +183,75 @@ export function PlayerDetailPage({
           </div>
         </section>
 
-        <section className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
-          <DetailStatCard label="Projected Points" value={detail.projection.projectedStats.mean.points.toFixed(1)} accent />
-          <DetailStatCard label="Projected Assists" value={detail.projection.projectedStats.mean.assists.toFixed(1)} />
-          <DetailStatCard label="Projected Rebounds" value={detail.projection.projectedStats.mean.rebounds.toFixed(1)} />
-          <DetailStatCard label="Projected 3PM" value={detail.projection.projectedStats.mean.threesMade.toFixed(1)} />
-          <DetailStatCard label="Projected Steals" value={detail.projection.projectedStats.mean.steals.toFixed(1)} />
-          <DetailStatCard label="Projected Blocks" value={detail.projection.projectedStats.mean.blocks.toFixed(1)} />
+        {/* ── Primary stat cards ─────────────────────────────────────────── */}
+        <section className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+          {/* Points — big accent card */}
+          <div className="rounded-3xl border border-electric/30 bg-electric/5 p-5 sm:col-span-2 xl:col-span-2">
+            <p className="text-xs uppercase tracking-[0.25em] text-electric/70">Projected Points</p>
+            <p className="mt-1 font-display text-6xl text-electric">
+              {detail.projection.projectedStats.mean.points.toFixed(1)}
+            </p>
+            {/* Floor / Ceiling band */}
+            <div className="mt-4 flex items-center gap-3">
+              <div className="flex-1 rounded-2xl border border-white/8 bg-white/3 px-3 py-2 text-center">
+                <p className="text-[10px] uppercase tracking-widest text-muted">Floor</p>
+                <p className="font-display text-xl text-white">{detail.confidence.floorPoints.toFixed(1)}</p>
+              </div>
+              <span className="text-muted">→</span>
+              <div className="flex-1 rounded-2xl border border-electric/20 bg-electric/5 px-3 py-2 text-center">
+                <p className="text-[10px] uppercase tracking-widest text-electric/70">Median</p>
+                <p className="font-display text-xl text-electric">{detail.confidence.medianPoints.toFixed(1)}</p>
+              </div>
+              <span className="text-muted">→</span>
+              <div className="flex-1 rounded-2xl border border-white/8 bg-white/3 px-3 py-2 text-center">
+                <p className="text-[10px] uppercase tracking-widest text-muted">Ceiling</p>
+                <p className="font-display text-xl text-white">{detail.confidence.ceilingPoints.toFixed(1)}</p>
+              </div>
+            </div>
+          </div>
+
+          {/* Assists */}
+          <div className="rounded-3xl border border-white/8 bg-panelAlt/80 p-5">
+            <p className="text-xs uppercase tracking-[0.25em] text-muted">Assists</p>
+            <p className="mt-2 font-display text-4xl text-white">
+              {detail.projection.projectedStats.mean.assists.toFixed(1)}
+            </p>
+          </div>
+
+          {/* Rebounds */}
+          <div className="rounded-3xl border border-white/8 bg-panelAlt/80 p-5">
+            <p className="text-xs uppercase tracking-[0.25em] text-muted">Rebounds</p>
+            <p className="mt-2 font-display text-4xl text-white">
+              {detail.projection.projectedStats.mean.rebounds.toFixed(1)}
+            </p>
+          </div>
         </section>
 
-        <section className="panel p-6">
-          <div className="mb-4 flex items-center justify-between">
-            <h2 className="panel-title">Confidence Range</h2>
-            <span className="text-sm text-muted">Floor to ceiling scoring band</span>
+        {/* ── Secondary stat row ─────────────────────────────────────────── */}
+        <section className="grid gap-4 grid-cols-2 sm:grid-cols-4">
+          <div className="rounded-3xl border border-white/8 bg-panelAlt/80 p-5">
+            <p className="text-xs uppercase tracking-[0.25em] text-muted">3-Pointers</p>
+            <p className="mt-2 font-display text-3xl text-white">
+              {detail.projection.projectedStats.mean.threesMade.toFixed(1)}
+            </p>
           </div>
-          <div className="grid gap-4 md:grid-cols-3">
-            <DetailStatCard label="Floor" value={detail.confidence.floorPoints.toFixed(1)} />
-            <DetailStatCard label="Median" value={detail.confidence.medianPoints.toFixed(1)} accent />
-            <DetailStatCard label="Ceiling" value={detail.confidence.ceilingPoints.toFixed(1)} />
+          <div className="rounded-3xl border border-white/8 bg-panelAlt/80 p-5">
+            <p className="text-xs uppercase tracking-[0.25em] text-muted">Steals</p>
+            <p className="mt-2 font-display text-3xl text-white">
+              {detail.projection.projectedStats.mean.steals.toFixed(1)}
+            </p>
+          </div>
+          <div className="rounded-3xl border border-white/8 bg-panelAlt/80 p-5">
+            <p className="text-xs uppercase tracking-[0.25em] text-muted">Blocks</p>
+            <p className="mt-2 font-display text-3xl text-white">
+              {detail.projection.projectedStats.mean.blocks.toFixed(1)}
+            </p>
+          </div>
+          <div className="rounded-3xl border border-white/8 bg-panelAlt/80 p-5">
+            <p className="text-xs uppercase tracking-[0.25em] text-muted">Turnovers</p>
+            <p className="mt-2 font-display text-3xl text-white">
+              {detail.projection.projectedStats.mean.turnovers.toFixed(1)}
+            </p>
           </div>
         </section>
 
