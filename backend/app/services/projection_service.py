@@ -1667,21 +1667,28 @@ class ProjectionService:
             # 3 days = +1%, 4+ days = +0.5% (can get rusty)
             player_estimate *= rest_factor
 
-            # ── Playoff scoring calibration — REMOVED ────────────────────────
-            # The historical RS→playoff deflation ratio (~0.9488) was previously
-            # applied here as a blanket -5% reduction to player_estimate.
+            # ── Playoff scoring calibration ───────────────────────────────────
+            # RS off_rtg values (e.g. SAS 118.7) are trained on regular-season data.
+            # Playoffs play tighter, slower, and more targeted — even a "hot" player
+            # in the last 5 games of a prior series will over-project vs a fresh elite
+            # defence if we anchor purely on RS pts_avg.
             #
-            # This was double-counting: the form-first model's hot_factor already
-            # captures each player's actual recent scoring (last-5 games), which
-            # for playoff games ARE the playoff games themselves.  Brunson scoring
-            # 30/38 in the current series already shows up as hot_factor > 1.0 in
-            # project_player(); shrinking the team total by another 5% then forces
-            # _apply_scale to compress all individual projections down (e.g. 24.6 → 20.7).
+            # hot_factor only captures form within the CURRENT series; it cannot
+            # price in that NYK's defence (112.3 RS def_rtg, which looks average) is
+            # actually elite-tier in the post-season.  The blanket RS→playoff ratio
+            # is still needed as the prior calibration.
             #
-            # The opp_factor from XGBoost also already adjusts for the specific
-            # opponent's defensive quality, so there is no unpriced "playoff tightness"
-            # left to correct.  Series-level calibration (lines below) handles any
-            # remaining team-total drift once 1+ games of series data exist.
+            # Fades as series evidence accumulates (by game 4, box scores dominate):
+            #   series_games=0  → full ratio   (~−5%)
+            #   series_games=1  → 75% of ratio (~−3.75%)
+            #   series_games=2  → 50% of ratio (~−2.5%)
+            #   series_games=4+ → 0%  (series data takes over completely)
+            if is_playoffs:
+                _sg = (series_eff or {}).get("games_played", 0)
+                _playoff_ratio   = _fetch_playoff_scoring_ratio()
+                _series_decay    = min(1.0, _sg / 4.0)
+                _effective_ratio = 1.0 - (1.0 - _playoff_ratio) * (1.0 - _series_decay)
+                player_estimate *= _effective_ratio
             # ─────────────────────────────────────────────────────────────────
 
             # ── Road trip fatigue ─────────────────────────────────────────────
@@ -1831,10 +1838,14 @@ class ProjectionService:
             # Season ratings (118 for both CLE and NYK) mask that CLE is only
             # scoring 98.5/game in this specific series. Series reality > pre-series model.
             if series_games >= 2 and series_eff:
+                # 2+ games: series reality dominates
                 pace_estimate = series_eff["pts_per_game"]
             elif series_games == 1 and series_eff:
-                # Blend formula and series equally for small sample
-                pace_estimate = (formula_pace_estimate + series_eff["pts_per_game"]) / 2
+                # Game 1 just played: actual score is the single best anchor we have.
+                # RS ratings (e.g. NYK def_rtg 112.3) are stale — they don't reflect
+                # how this specific matchup plays in the post-season.  One real box
+                # score beats any formula anchored on regular-season pace/efficiency.
+                pace_estimate = series_eff["pts_per_game"] * 0.85 + formula_pace_estimate * 0.15
             else:
                 pace_estimate = formula_pace_estimate
 
@@ -1876,13 +1887,13 @@ class ProjectionService:
             if series_games >= 2:
                 return round(player_estimate + flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor + coach_adjustment)
             elif series_games == 1:
-                blended = player_estimate * 0.80 + pace_estimate * 0.20
+                # Game 1 just played: pace_estimate is 85% the actual series score.
+                # Let it dominate — RS-anchored player model is still too noisy here.
+                blended = player_estimate * 0.45 + pace_estimate * 0.55
             else:
-                # Game 1 / no series data: form-first individual projections are our
-                # best signal.  Weight the player model heavily so the team total
-                # stays close to the sum of form-first individual predictions and
-                # _apply_scale has minimal compression to apply.
-                blended = player_estimate * 0.85 + pace_estimate * 0.15
+                # Game 1 / no series data: player model is form-first RS-anchored.
+                # Pace model (formula) provides an independent reality check.
+                blended = player_estimate * 0.70 + pace_estimate * 0.30
 
             blended += flat_bonus + intensity_boost + road_fatigue + motivation_factor + h2h_factor + coach_adjustment
             return round(blended)
