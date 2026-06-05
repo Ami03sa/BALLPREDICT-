@@ -611,6 +611,92 @@ def _enrich_players_from_db(team: "TeamGameState") -> int:
     return enriched
 
 
+def _build_team_from_db(team_raw: dict, score: int, ratings: dict[str, dict] | None = None) -> "TeamGameState":
+    """
+    Build a full TeamGameState with player rosters sourced entirely from nba_training.db.
+    Used for pre-game ESPN upcoming_ cards when the NBA CDN hasn't posted the game yet.
+    """
+    tricode = team_raw.get("teamTricode", "UNK")
+    _ESPN_FIX = {"NY": "NYK", "SA": "SAS", "GS": "GSW", "NO": "NOP"}
+    tricode = _ESPN_FIX.get(tricode.upper(), tricode.upper())
+    team_raw = dict(team_raw, teamTricode=tricode)
+
+    if not _DB_PATH.exists():
+        logger.warning("nba_training.db not found — returning minimal team for %s", tricode)
+        return _build_minimal_team_state(team_raw, score, ratings)
+
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        # Find the most recent season in the DB for this team
+        latest = conn.execute("""
+            SELECT MAX(season) FROM player_game_logs
+            WHERE team_abbreviation = ? AND season_type = 'Regular Season'
+        """, (tricode,)).fetchone()
+        latest_season = latest[0] if latest and latest[0] else "2024-25"
+
+        rows = conn.execute("""
+            SELECT
+                player_id,
+                player_name,
+                AVG(pts)     AS pts_avg,
+                AVG(ast)     AS ast_avg,
+                AVG(reb)     AS reb_avg,
+                AVG(stl)     AS stl_avg,
+                AVG(blk)     AS blk_avg,
+                AVG(tov)     AS tov_avg,
+                AVG(fg3m)    AS fg3m_avg,
+                AVG(usg_pct) AS usg_avg,
+                AVG(min)     AS min_avg,
+                AVG(fg_pct)  AS fg_pct_avg,
+                AVG(fg3_pct) AS fg3_pct_avg,
+                COUNT(*)     AS gp
+            FROM player_game_logs
+            WHERE team_abbreviation = ?
+              AND season = ?
+              AND season_type = 'Regular Season'
+              AND min >= 2
+            GROUP BY player_id, player_name
+            ORDER BY pts_avg DESC
+        """, (tricode, latest_season)).fetchall()
+        conn.close()
+    except Exception as exc:
+        logger.warning("DB team build failed for %s: %s", tricode, exc)
+        return _build_minimal_team_state(team_raw, score, ratings)
+
+    # Pick most recent season data per player — filter gp >= 5
+    season_players = []
+    seen: set[str] = set()
+    for row in rows:
+        pid = str(row[0])
+        if pid in seen or int(row[13] or 0) < 5:
+            continue
+        seen.add(pid)
+        season_players.append({
+            "PLAYER_ID": row[0],
+            "PLAYER_NAME": row[1],
+            "PTS": row[2],
+            "AST": row[3],
+            "REB": row[4],
+            "STL": row[5],
+            "BLK": row[6],
+            "TOV": row[7],
+            "FG3M": row[8],
+            "usg_pct": row[9],
+            "MIN": row[10],
+            "FG_PCT": row[11],
+            "FG3_PCT": row[12],
+            "FGA": max(0.0, float(row[2] or 0) / max(0.45, float(row[11] or 0.45))),
+            "FTA": max(0.0, float(row[7] or 0) * 0.5),
+        })
+
+    if not season_players:
+        logger.warning("No DB players found for %s — returning minimal team", tricode)
+        return _build_minimal_team_state(team_raw, score, ratings)
+
+    logger.info("Built DB team for %s with %d players", tricode, len(season_players))
+    return _build_team_state_from_season_stats(team_raw, score, season_players, ratings)
+
+
 def _apply_injury_report(team: "TeamGameState", injury_report: dict[str, str]) -> None:
     """Mark players Out/Doubtful on the official injury report as DNP in-place."""
     for player in team.players:

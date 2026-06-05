@@ -393,6 +393,123 @@ class LiveGameService:
         )
         return self._build_player_detail_payload(game_id, player_id, context, snapshot)
 
+    async def _resolve_upcoming_context(self, game_id: str) -> tuple[GameContext, dict]:
+        """Build a pre-game prediction context for an ESPN upcoming_ game_id."""
+        # ── 1. Find the slate row ────────────────────────────────────────────
+        slate_row: dict = {}
+        for r in await self.list_slate_games():
+            if r.get("game_id") == game_id:
+                slate_row = r
+                break
+        if not slate_row:
+            raise HTTPException(status_code=404, detail=f"Game {game_id} not available on today's slate")
+
+        home_tc = slate_row.get("home_abbreviation", "")
+        away_tc = slate_row.get("away_abbreviation", "")
+
+        # ── 2. Return cached context if already built ────────────────────────
+        if game_id in self._contexts:
+            return self._contexts[game_id], slate_row
+
+        # ── 3. Try CDN – it may have come online since startup ───────────────
+        try:
+            _, contexts = await nba_api_service.fetch_today_slate_and_contexts()
+            for real_id, ctx in (contexts or {}).items():
+                ht = ctx.home_team.team_id.upper()
+                at = ctx.away_team.team_id.upper()
+                if ht == home_tc.upper() and at == away_tc.upper():
+                    self._contexts[game_id] = ctx
+                    logger.info("upcoming %s resolved from CDN as %s", game_id, real_id)
+                    return ctx, slate_row
+        except Exception:
+            pass
+
+        # ── 4. Same pipeline as Game 1: live season stats API → build team ──────
+        import json as _json
+        from app.services.nba_api_service import (
+            _build_team_state_from_season_stats,
+            _enrich_players_from_db,
+            _build_minimal_team_state,
+        )
+
+        _ESPN_FIX = {"NY": "NYK", "SA": "SAS", "GS": "GSW", "NO": "NOP"}
+        home_tc_norm = _ESPN_FIX.get(home_tc.upper(), home_tc.upper())
+        away_tc_norm = _ESPN_FIX.get(away_tc.upper(), away_tc.upper())
+
+        # Look up NBA team IDs from the last game cache (stored by fetch_today_slate_and_contexts)
+        home_team_id = 0
+        away_team_id = 0
+        try:
+            if _GAME_CACHE_PATH.exists():
+                cached = _json.loads(_GAME_CACHE_PATH.read_text())
+                for meta in cached.values():
+                    if meta.get("home_tc", "").upper() == home_tc_norm:
+                        home_team_id = int(meta.get("home_team_id") or 0)
+                    if meta.get("away_tc", "").upper() == away_tc_norm:
+                        away_team_id = int(meta.get("away_team_id") or 0)
+                    if meta.get("home_tc", "").upper() == away_tc_norm:
+                        away_team_id = int(meta.get("home_team_id") or 0)
+                    if meta.get("away_tc", "").upper() == home_tc_norm:
+                        home_team_id = int(meta.get("away_team_id") or 0)
+        except Exception:
+            pass
+
+        team_ratings: dict = {}
+        try:
+            team_ratings = await nba_live_client.fetch_team_ratings() or {}
+        except Exception:
+            pass
+
+        home_raw = {"teamTricode": home_tc_norm, "teamId": home_team_id, "teamCity": "", "teamName": slate_row.get("home_team", home_tc)}
+        away_raw = {"teamTricode": away_tc_norm, "teamId": away_team_id, "teamCity": "", "teamName": slate_row.get("away_team", away_tc)}
+
+        # Fetch season stats — exact same call as fetch_today_slate_and_contexts for Game 1
+        home_season_stats, away_season_stats = [], []
+        try:
+            home_season_stats, away_season_stats = await asyncio.gather(
+                nba_live_client.fetch_player_season_stats(home_team_id),
+                nba_live_client.fetch_player_season_stats(away_team_id),
+            )
+        except Exception as exc:
+            logger.warning("Season stats fetch failed for upcoming %s: %s", game_id, exc)
+
+        if home_season_stats and away_season_stats:
+            home_team = _build_team_state_from_season_stats(home_raw, 0, home_season_stats, team_ratings)
+            away_team = _build_team_state_from_season_stats(away_raw, 0, away_season_stats, team_ratings)
+            logger.info("Upcoming %s: built from live season stats (%d + %d players)", game_id, len(home_team.players), len(away_team.players))
+        else:
+            # Last resort — minimal (no players); DB enrichment below won't add players but at least no crash
+            home_team = _build_minimal_team_state(home_raw, 0, team_ratings)
+            away_team = _build_minimal_team_state(away_raw, 0, team_ratings)
+            logger.warning("Upcoming %s: season stats unavailable, using minimal team state", game_id)
+
+        # DB enrichment fallback — same as fetch_today_slate_and_contexts
+        _enrich_players_from_db(home_team)
+        _enrich_players_from_db(away_team)
+
+        ctx = GameContext(
+            game_id=game_id,
+            quarter=0,
+            clock="",
+            home_team=home_team,
+            away_team=away_team,
+            score_margin=0,
+            home_advantage=2.4,
+            overtime_probability=0.02,
+            momentum=0.0,
+            fatigue_pressure=0.5,
+            whistle_tightness=0.48,
+            playoff_intensity=0.55,
+            live_pace_multiplier=1.0,
+            injury_risk_flags=[],
+            back_to_back=False,
+            home_vegas_total=None,
+            away_vegas_total=None,
+        )
+        self._contexts[game_id] = ctx
+        logger.info("Built pre-game context for upcoming game %s (%s vs %s)", game_id, home_tc_norm, away_tc_norm)
+        return ctx, slate_row
+
     async def _resolve_context(self, game_id: str) -> tuple[GameContext, dict | None]:
         """Try live fetch first; fall back to startup context."""
         from dataclasses import replace as dc_replace
@@ -753,7 +870,9 @@ class LiveGameService:
         context: GameContext,
         snapshot: GameSnapshot,
     ) -> PlayerDetailResponse:
-        projection = next(player for player in snapshot.player_projections if player.player_id == player_id)
+        projection = next((player for player in snapshot.player_projections if player.player_id == player_id), None)
+        if projection is None:
+            raise HTTPException(status_code=404, detail=f"Player {player_id} not found in game {game_id}")
 
         if projection.team_id == context.home_team.team_id:
             team = context.home_team

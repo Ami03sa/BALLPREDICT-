@@ -1169,6 +1169,24 @@ class PredictionEngine:
                 # Assists scale at 70% of pts lift (playmaking role grows slightly less)
                 proj_ast = round(proj_ast * (1.0 + (_lift - 1.0) * 0.70), 1)
 
+            # ── Playoff FT rate suppression ────────────────────────────────────────
+            # Refs call ~12% fewer fouls in playoff games vs regular season.
+            # Players who draw frequent contact (high-usage stars) lose the most —
+            # a star who gets 25% of their pts from the line loses ~3% of total pts.
+            # Estimated FT fraction per role (no FTA column in DB — proxy via role):
+            #   star     ≈ 25% of pts from FT line  →  -3.0% pts
+            #   starter  ≈ 20%                      →  -2.4% pts
+            #   rotation ≈ 15%                      →  -1.8% pts
+            #   bench    ≈ 10%                      →  -1.2% pts
+            # Applied AFTER playoff lift so the net effect is realistic:
+            #   star net: +6% lift × (1 - 3%) ≈ +2.8% vs raw RS prediction
+            if is_playoffs and player.pts_avg > 4.0:
+                _ft_fraction = {"star": 0.25, "starter": 0.20, "rotation": 0.15, "bench": 0.10}.get(
+                    player.rotation_role, 0.15
+                )
+                _ft_suppression = _ft_fraction * 0.12
+                proj_pts = round(proj_pts * (1.0 - _ft_suppression), 1)
+
             # ── σ-based projection ceiling ─────────────────────────────────────────
             #
             # Instead of "season_avg × role_constant", cap at:
@@ -1201,6 +1219,19 @@ class PredictionEngine:
             proj_tov  = round(player.tov_avg,  1) if player.tov_avg  > 0 else 0.0
             proj_fg3m = round(player.fg3m_avg, 1) if player.fg3m_avg > 0 else 0.0
             spread = 1.2 + pressure * 2.0
+
+        # ── Away playoff hostile crowd TOV bump ───────────────────────────────
+        # Hostile playoff road environments force extra turnovers — crowd noise
+        # disrupts play-calling, communication, and pressures ball handlers.
+        # Stars and starters are affected most (higher usage = more exposure).
+        # Does NOT affect home team players or regular season games.
+        if context.playoff_intensity >= 0.55 and player.team_id != context.home_team.team_id:
+            if player.rotation_role == "star":
+                proj_tov = round(proj_tov + 0.3, 1)
+            elif player.rotation_role == "starter":
+                proj_tov = round(proj_tov + 0.2, 1)
+            elif player.rotation_role == "rotation":
+                proj_tov = round(proj_tov + 0.1, 1)
 
         mean_line = StatLine(
             points=proj_pts, assists=proj_ast, rebounds=proj_reb,

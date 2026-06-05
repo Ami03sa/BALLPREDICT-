@@ -1,7 +1,7 @@
 {
   "pts": {
-    "mae": 4.652,
-    "rmse": 6.032
+    "mae": 4.651,
+    "rmse": 6.031
   },
   "ast": {
     "mae": 1.375,
@@ -28,7 +28,7 @@
     "rmse": 1.191
   },
   "win_prob": {
-    "accuracy": 69.9,
+    "accuracy": 69.8,
     "log_loss": 0.579,
     "features": [
       "is_home",

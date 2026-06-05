@@ -1470,6 +1470,45 @@ class ProjectionService:
             home_series_eff = _fetch_series_team_efficiency(home_tc, away_tc)
             away_series_eff = _fetch_series_team_efficiency(away_tc, home_tc)
 
+            _sg = (home_series_eff or {}).get("games_played", 0) or (away_series_eff or {}).get("games_played", 0)
+
+            # ── Rotation tightening as series deepens ─────────────────────────
+            # Coaches progressively cut bench/rotation minutes each round.
+            # Game 1-2: series_participants already handles who plays and how much.
+            # Game 3+:  bench squeezed harder (extra -15% play_prob per game beyond G2),
+            #           rotation -8% per game. Stars/starters untouched.
+            # Game 2 effect: _sg=1 → _tighten_games < 1 → no change (forward-looking).
+            if _sg >= 3:
+                _tighten_games = _sg - 2
+                _role_lookup = {
+                    p.player_id: p.rotation_role
+                    for p in context.home_team.players + context.away_team.players
+                }
+                for _pid in list(play_prob.keys()):
+                    _role = _role_lookup.get(_pid, "bench")
+                    if _role == "bench":
+                        play_prob[_pid] = round(play_prob[_pid] * max(0.40, 1.0 - _tighten_games * 0.15), 4)
+                    elif _role == "rotation":
+                        play_prob[_pid] = round(play_prob[_pid] * max(0.65, 1.0 - _tighten_games * 0.08), 4)
+
+            # ── Cumulative series fatigue ──────────────────────────────────────
+            # Heavy playoff minutes accumulate over a series. Stars playing
+            # 37+ min/game feel it meaningfully by Game 4-5. Modeled as a
+            # play_prob reduction so _apply_scale redistributes their share to
+            # fresher teammates (correct behaviour — fatigued stars step back).
+            # Threshold: 35 min × 3 games = 105 min before fatigue bites.
+            # Rate: -0.5% play_prob per 10 min above threshold.
+            # Game 2 (_sg=1): ~37 min × 1 = 37 total → below threshold → 0 effect.
+            # Game 5 (_sg=4): ~37 min × 4 = 148 total → -2.15% for Wemby/Brunson.
+            if _sg >= 2 and series_participants:
+                for _pid, _avg_min in series_participants.items():
+                    _total_min = _avg_min * _sg
+                    _fatigue_threshold = 105.0
+                    if _total_min > _fatigue_threshold and _pid in play_prob and play_prob[_pid] > 0:
+                        _excess = _total_min - _fatigue_threshold
+                        _fatigue_mult = max(0.92, 1.0 - (_excess / 10.0) * 0.005)
+                        play_prob[_pid] = round(play_prob[_pid] * _fatigue_mult, 4)
+
         # Floor play probability for stars/starters now that is_playoffs is known.
         # Stars and starters almost always play — cap DNP risk at a low level.
         # Regular season: 0.88 / 0.85 floor.
@@ -1731,6 +1770,16 @@ class ProjectionService:
             # (a) Turnover rate: extra turnovers = fewer scoring possessions.
             # (b) Series calibration: blend player estimate toward actual series pace.
             # (c) Opponent series defense: replace season def_rtg with series evidence.
+            # ── Away playoff hostile crowd suppression ────────────────────────────
+            # Hostile playoff arenas suppress away scoring through two channels:
+            # (1) FT shooting degrades ~1.5% for away teams in loud playoff buildings
+            # (2) Half-court shot creation is harder — defence gets extra crowd lift
+            # Flat -2 pts on the away team's player estimate. Separate from:
+            #   road_fatigue  (travel-based, consecutive road trips)
+            #   away_off mult (season-average home/away differential)
+            if is_playoffs and not is_home:
+                player_estimate -= 2.0
+
             if series_eff and series_eff.get("games_played", 0) >= 1:
                 sg = series_eff["games_played"]
 
@@ -2066,6 +2115,43 @@ class ProjectionService:
 
         home_player_projections = _redistribute(home_player_projections, home_total)
         away_player_projections = _redistribute(away_player_projections, away_total)
+
+        # ── 3pt defensive scheme adjustment ──────────────────────────────────────
+        # When series data exists, compare actual fg3m/game to projected baseline.
+        # If the opponent is holding a team to significantly fewer (or more) 3s than
+        # their projection implies, scale each player's threes_made accordingly.
+        # This reflects real defensive schemes (e.g. packing the paint, forcing 3s).
+        if is_playoffs:
+            for projs, series_eff_data in [
+                (home_player_projections, home_series_eff),
+                (away_player_projections, away_series_eff),
+            ]:
+                sg3 = (series_eff_data or {}).get("games_played", 0)
+                if sg3 < 1:
+                    continue
+                series_fg3m = (series_eff_data or {}).get("fg3m_per_game", 0.0)
+                if series_fg3m <= 0:
+                    continue
+                baseline_fg3m = sum(
+                    p.projected_stats.mean.threes_made
+                    for p in projs
+                    if p.availability_status != "dnp"
+                )
+                if baseline_fg3m <= 0:
+                    continue
+                scheme_factor = round(min(1.20, max(0.70, series_fg3m / baseline_fg3m)), 4)
+                if abs(scheme_factor - 1.0) < 0.03:
+                    continue
+                for i, p in enumerate(projs):
+                    if p.availability_status == "dnp":
+                        continue
+                    old_fg3m = p.projected_stats.mean.threes_made
+                    new_fg3m = round(old_fg3m * scheme_factor, 1)
+                    if abs(new_fg3m - old_fg3m) < 0.05:
+                        continue
+                    new_mean = p.projected_stats.mean.model_copy(update={"threes_made": new_fg3m})
+                    new_band = p.projected_stats.model_copy(update={"mean": new_mean})
+                    projs[i] = p.model_copy(update={"projected_stats": new_band})
 
         # Compute breakout_stats as a SEPARATE column — projected_stats (XGBoost
         # floor/mean/ceiling) is left completely untouched. Volatility ceilings live
