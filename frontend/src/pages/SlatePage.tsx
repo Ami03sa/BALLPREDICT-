@@ -113,8 +113,9 @@ export function SlatePage({
   slateError?: string | null;
   onOpenGame: (gameId: string) => void;
 }) {
-  // Only show today's games — upcoming future games are hidden until their day arrives
-  const todayGames = games.filter((g) => (g.daysUntil ?? 0) === 0 && g.status !== "upcoming");
+  // Show today's games — includes pre-game ESPN cards (status=upcoming, daysUntil=0)
+  // Future days (daysUntil > 0) are still hidden
+  const todayGames = games.filter((g) => (g.daysUntil ?? 0) === 0);
 
   return (
     <main className="min-h-screen bg-black px-4 py-6 md:px-8">
