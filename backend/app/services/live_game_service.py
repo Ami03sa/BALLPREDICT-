@@ -347,8 +347,9 @@ class LiveGameService:
                             "away_team": away_name,
                             "home_abbreviation": home_abbr,
                             "away_abbreviation": away_abbr,
-                            "home_record": home_c.get("records", [{}])[0].get("summary", ""),
-                            "away_record": away_c.get("records", [{}])[0].get("summary", ""),
+                            # Use cached series record (e.g. "1-0") not ESPN's RS record (e.g. "62-20")
+                            "home_record": self._series_record_for(home_abbr),
+                            "away_record": self._series_record_for(away_abbr),
                             "prediction_hook": "Get Prediction" if delta == 0 else f"Prediction unlocks on game day ({game_date_display})",
                         })
         except Exception as exc:
@@ -357,13 +358,22 @@ class LiveGameService:
         return results
 
     async def get_game_preview(self, game_id: str) -> dict:
+        # upcoming_ IDs come from ESPN pre-tip cards (NBA CDN hasn't posted the game yet).
+        # Build a pre-game context from the cached slate row so predictions work all day.
+        if game_id.startswith("upcoming_"):
+            context, slate_row = await self._resolve_upcoming_context(game_id)
+            return self._build_preview_payload(context, slate_row)
         context, scoreboard_game = await self._resolve_context(game_id)
         slate_row = self._build_live_slate_row(scoreboard_game) if scoreboard_game else self._slate.get(game_id, {"game_id": game_id, "status": "scheduled", "tipoff": "TBD", "broadcast": "", "arena": "", "headline": "", "home_team": "", "away_team": "", "home_abbreviation": "", "away_abbreviation": "", "home_record": "", "away_record": "", "prediction_hook": ""})
         return self._build_preview_payload(context, slate_row)
 
     async def get_game_snapshot(self, game_id: str) -> GameSnapshot:
-        context, scoreboard_game = await self._resolve_context(game_id)
-        status = self._status_label(scoreboard_game.get("gameStatus")) if scoreboard_game else "scheduled"
+        if game_id.startswith("upcoming_"):
+            context, _ = await self._resolve_upcoming_context(game_id)
+            status = "scheduled"
+        else:
+            context, scoreboard_game = await self._resolve_context(game_id)
+            status = self._status_label(scoreboard_game.get("gameStatus")) if scoreboard_game else "scheduled"
         loop = asyncio.get_event_loop()
         snapshot = await loop.run_in_executor(
             None, partial(projection_service.build_snapshot, context, status=status, possession_feed=[])
@@ -371,8 +381,12 @@ class LiveGameService:
         return snapshot
 
     async def get_player_detail(self, game_id: str, player_id: str) -> PlayerDetailResponse:
-        context, scoreboard_game = await self._resolve_context(game_id)
-        status = self._status_label(scoreboard_game.get("gameStatus")) if scoreboard_game else "scheduled"
+        if game_id.startswith("upcoming_"):
+            context, _ = await self._resolve_upcoming_context(game_id)
+            status = "scheduled"
+        else:
+            context, scoreboard_game = await self._resolve_context(game_id)
+            status = self._status_label(scoreboard_game.get("gameStatus")) if scoreboard_game else "scheduled"
         loop = asyncio.get_event_loop()
         snapshot = await loop.run_in_executor(
             None, partial(projection_service.build_snapshot, context, status=status, possession_feed=[])
@@ -959,6 +973,26 @@ class LiveGameService:
             f"{away_name} and {home_name} are the first leverage points. BallPredict will reshape projected efficiency, "
             "pace, and teammate creation once the live usage and scoring burden becomes clear."
         )
+
+    def _series_record_for(self, team_abbr: str) -> str:
+        """Return the playoff series record (e.g. '1-0') for a team from the last game cache.
+        Falls back to empty string if not found."""
+        import json as _json
+        # ESPN uses shortened codes that differ from NBA tricodes (NY→NYK, SA→SAS, GS→GSW, etc.)
+        _ESPN_FIX = {"NY": "NYK", "SA": "SAS", "GS": "GSW", "NO": "NOP", "OKC": "OKC"}
+        abbr = _ESPN_FIX.get(team_abbr.upper(), team_abbr.upper())
+        try:
+            if not _GAME_CACHE_PATH.exists():
+                return ""
+            payload = _json.loads(_GAME_CACHE_PATH.read_text())
+            for meta in payload.values():
+                if meta.get("home_tc", "").upper() == abbr:
+                    return meta.get("home_record", "")
+                if meta.get("away_tc", "").upper() == abbr:
+                    return meta.get("away_record", "")
+        except Exception:
+            pass
+        return ""
 
     def _status_label(self, game_status: Any) -> str:
         status_int = int(game_status or 0)
