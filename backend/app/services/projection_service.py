@@ -279,7 +279,7 @@ def _fetch_player_game_data(player_ids: list[str]) -> tuple[dict[str, float], di
       play_prob — games_played / team_total_games, clamped [0.25, 1.0]
     """
     if not player_ids or not _DB_PATH.exists():
-        return {pid: 15.0 for pid in player_ids}, {pid: 1.0 for pid in player_ids}
+        return dict.fromkeys(player_ids, 15.0), dict.fromkeys(player_ids, 1.0)
     try:
         placeholders = ",".join("?" * len(player_ids))
         conn = sqlite3.connect(str(_DB_PATH))
@@ -333,7 +333,7 @@ def _fetch_player_game_data(player_ids: list[str]) -> tuple[dict[str, float], di
 
         return avg_min, play_prob
     except Exception:
-        return {pid: 15.0 for pid in player_ids}, {pid: 1.0 for pid in player_ids}
+        return dict.fromkeys(player_ids, 15.0), dict.fromkeys(player_ids, 1.0)
 
 
 def _fetch_team_context(team_abbreviation: str) -> dict:
@@ -1044,7 +1044,7 @@ def _fetch_series_ot_scoring_avgs(
         return None, None
 
 
-def _usage_boost(projections: list, avg_min: dict, play_prob: dict) -> float:
+def _usage_boost(projections: list, _avg_min: dict, _play_prob: dict) -> float:
     """
     When DNP players held a share of projected pts, boost remaining active players.
     Capped at 1.25× to prevent over-inflation.
@@ -1484,7 +1484,7 @@ class ProjectionService:
                     p.player_id: p.rotation_role
                     for p in context.home_team.players + context.away_team.players
                 }
-                for _pid in list(play_prob.keys()):
+                for _pid in play_prob.keys():
                     _role = _role_lookup.get(_pid, "bench")
                     if _role == "bench":
                         play_prob[_pid] = round(play_prob[_pid] * max(0.40, 1.0 - _tighten_games * 0.15), 4)
@@ -1646,8 +1646,6 @@ class ProjectionService:
         home_hca = _fetch_team_home_away_factor(home_tc)
         away_hca = _fetch_team_home_away_factor(away_tc)
 
-        home_advantage = context.home_advantage  # typically 2.4–2.5 pts
-
         def _blended_team_total(
             projections: list,
             off_rating: float,
@@ -1662,9 +1660,9 @@ class ProjectionService:
             opp_series_eff: dict | None = None,
             team_hca: dict | None = None,
             opp_hca: dict | None = None,
-            series_deficit: int = 0,
-            is_elimination: bool = False,
-            is_closeout: bool = False,
+            _series_deficit: int = 0,
+            _is_elimination: bool = False,
+            _is_closeout: bool = False,
             team_wins: int = 0,
             opp_wins: int = 0,
             rest_factor: float = 1.0,
@@ -1835,7 +1833,7 @@ class ProjectionService:
             # opp_def_mult — how much the opponent's defense weakens/strengthens
             #                based on their location (road teams defend slightly worse)
             # Playoff amplifier: crowd/stakes matter more → scale effect up 15%.
-            is_pl = context.playoff_intensity >= 0.55
+            _is_pl = context.playoff_intensity >= 0.55
 
             _team_hca = team_hca or {"home_off": 1.012, "away_off": 0.988, "home_def": 0.993}
             _opp_hca  = opp_hca  or {"home_off": 1.012, "away_off": 0.988, "home_def": 0.993}
@@ -1960,9 +1958,9 @@ class ProjectionService:
             opp_series_eff=away_series_eff,
             team_hca=home_hca,
             opp_hca=away_hca,
-            series_deficit=home_series_deficit,
-            is_elimination=home_is_elimination,
-            is_closeout=home_is_closeout,
+            _series_deficit=home_series_deficit,
+            _is_elimination=home_is_elimination,
+            _is_closeout=home_is_closeout,
             team_wins=home_series_wins,
             opp_wins=away_series_wins,
             rest_factor=home_ctx["rest_factor"],
@@ -1985,9 +1983,9 @@ class ProjectionService:
             opp_series_eff=home_series_eff,
             team_hca=away_hca,
             opp_hca=home_hca,
-            series_deficit=away_series_deficit,
-            is_elimination=away_is_elimination,
-            is_closeout=away_is_closeout,
+            _series_deficit=away_series_deficit,
+            _is_elimination=away_is_elimination,
+            _is_closeout=away_is_closeout,
             team_wins=away_series_wins,
             opp_wins=home_series_wins,
             rest_factor=away_ctx["rest_factor"],
@@ -2505,8 +2503,6 @@ class ProjectionService:
                 "leverage": "medium",
             }
         ]
-
-        margin = abs(home_total - away_total)
 
         # Build blowout schema objects from detection result
         from app.schemas.game import BlowoutScore as _BlowoutScore

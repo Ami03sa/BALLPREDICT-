@@ -17,6 +17,8 @@ _DB_PATH   = _DATA_DIR / "nba_training.db"
 
 _TARGETS = ["pts", "ast", "reb", "stl", "blk", "fg3m", "tov"]
 
+_SQL_MAX_SEASON = "SELECT MAX(season) FROM player_game_logs"
+
 
 def _load_models() -> dict | None:
     try:
@@ -464,7 +466,7 @@ def _opponent_def_stats(opponent_id: str, position: str = "F") -> dict:
         return defaults
     try:
         conn = sqlite3.connect(_DB_PATH)
-        season_row = conn.execute("SELECT MAX(season) FROM player_game_logs").fetchone()
+        season_row = conn.execute(_SQL_MAX_SEASON).fetchone()
         season = season_row[0] if season_row else "2024-25"
 
         team_row = conn.execute(
@@ -569,7 +571,7 @@ def _player_vs_opp(player_id: str, opponent_id: str) -> dict:
         conn = sqlite3.connect(str(_DB_PATH))
         # Determine the cutoff: last 2 seasons (current + previous)
         season_row = conn.execute(
-            "SELECT MAX(season) FROM player_game_logs"
+            _SQL_MAX_SEASON
         ).fetchone()
         if season_row and season_row[0]:
             cur = season_row[0]       # e.g. "2025-26"
@@ -620,7 +622,7 @@ def _series_context(team_id: str, opp_id: str, is_playoffs: bool) -> dict:
 
     try:
         conn = sqlite3.connect(_DB_PATH)
-        season = (conn.execute("SELECT MAX(season) FROM player_game_logs").fetchone() or [None])[0]
+        season = (conn.execute(_SQL_MAX_SEASON).fetchone() or [None])[0]
         if not season:
             conn.close()
             return defaults
@@ -1360,8 +1362,8 @@ class PredictionEngine:
                     "pts_last10_avg": team.offensive_rating,
                     "pts_diff_l5":    team.offensive_rating - opponent.defensive_rating,
                 }
-                X_wp = np.array([[feat_map.get(f, 0.0) for f in wp_features]])
-                prob = float(wp_model.predict_proba(X_wp)[0][1])
+                x_wp = np.array([[feat_map.get(f, 0.0) for f in wp_features]])
+                prob = float(wp_model.predict_proba(x_wp)[0][1])
                 classifier_win_prob = prob if is_home else 1 - prob
             except Exception:
                 pass  # fall through to formula-only

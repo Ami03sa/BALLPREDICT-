@@ -239,7 +239,7 @@ def _fetch_confirmed_starters(espn_game_id: str, name_map: dict[str, str]) -> di
 
 # ── Public API ────────────────────────────────────────────────────────────────
 
-def _espn_game_id_from_nba_id(nba_game_id: str, home_abbr: str, away_abbr: str) -> str | None:
+def _espn_game_id_from_nba_id(_nba_game_id: str, home_abbr: str, away_abbr: str) -> str | None:
     """
     Look up the ESPN game id for today's game between these two teams.
     Falls back to None if not found.

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import datetime
+from datetime import datetime, timezone
 from functools import partial
 from typing import Any
+
+_LEAGUE_PASS = "League Pass"
 
 import httpx
 from fastapi import HTTPException
@@ -253,7 +255,7 @@ class LiveGameService:
                     "quarter": int(game.get("period") or 0),
                     "clock": self._format_clock(game.get("gameClock", "")),
                     "score": f"{game['awayTeam'].get('score', 0)}-{game['homeTeam'].get('score', 0)}",
-                    "updated_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
                 for game in scoreboard.get("scoreboard", {}).get("games", [])
                 if int(game.get("gameStatus", 0)) >= 2
@@ -266,7 +268,7 @@ class LiveGameService:
                     "quarter": context.quarter,
                     "clock": context.clock,
                     "score": f"{context.away_team.score}-{context.home_team.score}",
-                    "updated_at": datetime.utcnow().isoformat(),
+                    "updated_at": datetime.now(timezone.utc).isoformat(),
                 }
                 for game_id, context in self._contexts.items()
             ]
@@ -716,7 +718,7 @@ class LiveGameService:
             players=players,
         )
 
-    def _build_live_players(self, team_payload: dict[str, Any], team_possessions: float):
+    def _build_live_players(self, team_payload: dict[str, Any], _team_possessions: float):
         from app.simulation.state import PlayerGameState
         players = []
         raw_players = team_payload.get("players", [])
@@ -885,7 +887,6 @@ class LiveGameService:
         proj = projection.projected_stats.mean
 
         q = context.quarter
-        remaining_q = max(0, 4 - q)
 
         n_adj    = len(projection.adjustments)
         pressure = projection.defensive_pressure   # 0.0 – 1.0
@@ -1002,7 +1003,7 @@ class LiveGameService:
             ],
         )
 
-    async def simulate_matchup(
+    def simulate_matchup(
         self, home_team: str, away_team: str, strategy_tags: list[str]
     ) -> SimulationResponse:
         context = next(iter(self._contexts.values()))
@@ -1137,11 +1138,11 @@ class LiveGameService:
             if isinstance(value, list) and value:
                 first = value[0]
                 if isinstance(first, dict):
-                    return first.get("broadcasterDisplay") or first.get("longName") or first.get("shortName") or "League Pass"
+                    return first.get("broadcasterDisplay") or first.get("longName") or first.get("shortName") or _LEAGUE_PASS
                 return str(first)
             if isinstance(value, dict):
-                return value.get("broadcasterDisplay") or value.get("longName") or value.get("shortName") or "League Pass"
-        return "League Pass"
+                return value.get("broadcasterDisplay") or value.get("longName") or value.get("shortName") or _LEAGUE_PASS
+        return _LEAGUE_PASS
 
     def _extract_arena(self, game: dict[str, Any]) -> str:
         arena = game.get("arena") or {}

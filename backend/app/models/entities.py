@@ -6,6 +6,10 @@ from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
 
+# Foreign key target constants — avoids repeating string literals across models
+_FK_TEAMS = "teams.id"
+_FK_GAMES = "games.id"
+
 
 class Team(Base):
     __tablename__ = "teams"
@@ -23,7 +27,7 @@ class Player(Base):
     __tablename__ = "players"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True)
-    team_id: Mapped[str] = mapped_column(ForeignKey("teams.id"))
+    team_id: Mapped[str] = mapped_column(ForeignKey(_FK_TEAMS))
     full_name: Mapped[str] = mapped_column(String(120), index=True)
     position: Mapped[str] = mapped_column(String(8))
     archetype: Mapped[str] = mapped_column(String(64))
@@ -41,8 +45,8 @@ class Game(Base):
     status: Mapped[str] = mapped_column(String(24), index=True)
     season: Mapped[str] = mapped_column(String(16), index=True)
     scheduled_at: Mapped[datetime] = mapped_column(DateTime(timezone=True))
-    home_team_id: Mapped[str] = mapped_column(ForeignKey("teams.id"))
-    away_team_id: Mapped[str] = mapped_column(ForeignKey("teams.id"))
+    home_team_id: Mapped[str] = mapped_column(ForeignKey(_FK_TEAMS))
+    away_team_id: Mapped[str] = mapped_column(ForeignKey(_FK_TEAMS))
     venue: Mapped[str] = mapped_column(String(120))
     metadata_blob: Mapped[dict] = mapped_column(JSON, default=dict)
 
@@ -54,11 +58,11 @@ class PossessionEvent(Base):
     __tablename__ = "possession_events"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
-    game_id: Mapped[str] = mapped_column(ForeignKey("games.id"), index=True)
+    game_id: Mapped[str] = mapped_column(ForeignKey(_FK_GAMES), index=True)
     quarter: Mapped[int] = mapped_column(Integer, index=True)
     clock: Mapped[str] = mapped_column(String(8))
-    offense_team_id: Mapped[str] = mapped_column(ForeignKey("teams.id"))
-    defense_team_id: Mapped[str] = mapped_column(ForeignKey("teams.id"))
+    offense_team_id: Mapped[str] = mapped_column(ForeignKey(_FK_TEAMS))
+    defense_team_id: Mapped[str] = mapped_column(ForeignKey(_FK_TEAMS))
     event_type: Mapped[str] = mapped_column(String(64))
     points_scored: Mapped[int] = mapped_column(Integer, default=0)
     tags: Mapped[list] = mapped_column(JSON, default=list)
@@ -70,7 +74,7 @@ class ProjectionSnapshot(Base):
     __tablename__ = "projection_snapshots"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
-    game_id: Mapped[str] = mapped_column(ForeignKey("games.id"), index=True)
+    game_id: Mapped[str] = mapped_column(ForeignKey(_FK_GAMES), index=True)
     subject_type: Mapped[str] = mapped_column(String(16))
     subject_id: Mapped[str] = mapped_column(String(64), index=True)
     phase: Mapped[str] = mapped_column(String(24), index=True)
@@ -85,8 +89,8 @@ class CoachingAdjustmentLog(Base):
     __tablename__ = "coaching_adjustment_logs"
 
     id: Mapped[str] = mapped_column(String(64), primary_key=True, default=lambda: str(uuid4()))
-    game_id: Mapped[str] = mapped_column(ForeignKey("games.id"), index=True)
-    team_id: Mapped[str] = mapped_column(ForeignKey("teams.id"), index=True)
+    game_id: Mapped[str] = mapped_column(ForeignKey(_FK_GAMES), index=True)
+    team_id: Mapped[str] = mapped_column(ForeignKey(_FK_TEAMS), index=True)
     quarter: Mapped[int] = mapped_column(Integer)
     trigger_type: Mapped[str] = mapped_column(String(64), index=True)
     adjustment_family: Mapped[str] = mapped_column(String(64))

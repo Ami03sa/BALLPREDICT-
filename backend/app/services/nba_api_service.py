@@ -13,6 +13,7 @@ from pathlib import Path
 from app.simulation.state import GameContext, PlayerGameState, TeamGameState
 
 _DB_PATH = Path(__file__).parent.parent.parent / "data" / "nba_training.db"
+_DEFAULT_COACH_NAME = "Head Coach"
 _VEGAS_CACHE_PATH = Path(__file__).parent.parent.parent / "data" / "vegas_cache.json"
 
 # Vegas implied totals locked per game_id at first startup.
@@ -53,7 +54,7 @@ def _recent_dnp(player_id: str) -> tuple[bool, str | None]:
             "SELECT min FROM player_game_logs WHERE player_id = ? ORDER BY game_date DESC LIMIT 5",
             (player_id,),
         ).fetchall()
-        if rows and all(float(r[0] or 0) == 0.0 for r in rows):
+        if rows and all(abs(float(r[0] or 0)) < 1e-9 for r in rows):
             conn.close()
             return True, "DNP — 0 minutes in last 5 games"
 
@@ -297,7 +298,7 @@ def _build_team_state(box_team: dict, score: int, ratings: dict[str, dict] | Non
     return TeamGameState(
         team_id=team_id,
         team_name=team_name,
-        coach_name="Head Coach",
+        coach_name=_DEFAULT_COACH_NAME,
         score=score,
         pace=pace,
         offensive_rating=off_rating,
@@ -407,7 +408,7 @@ def _build_team_state_from_season_stats(team_raw: dict, score: int, season_playe
     return TeamGameState(
         team_id=team_id,
         team_name=team_name,
-        coach_name="Head Coach",
+        coach_name=_DEFAULT_COACH_NAME,
         score=score,
         pace=pace,
         offensive_rating=off_rating,
@@ -434,7 +435,7 @@ def _build_minimal_team_state(team_raw: dict, score: int, ratings: dict[str, dic
     return TeamGameState(
         team_id=team_id,
         team_name=team_name,
-        coach_name="Head Coach",
+        coach_name=_DEFAULT_COACH_NAME,
         score=score,
         pace=pace,
         offensive_rating=off_rating,

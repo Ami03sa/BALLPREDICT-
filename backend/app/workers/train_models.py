@@ -78,7 +78,8 @@ def _make_preprocessor() -> ColumnTransformer:
                     steps=[
                         ("imputer", SimpleImputer(strategy="median")),
                         ("scaler", StandardScaler()),
-                    ]
+                    ],
+                    memory=None,
                 ),
                 numeric_features,
             ),
@@ -88,7 +89,8 @@ def _make_preprocessor() -> ColumnTransformer:
                     steps=[
                         ("imputer", SimpleImputer(strategy="most_frequent")),
                         ("onehot", OneHotEncoder(handle_unknown="ignore")),
-                    ]
+                    ],
+                    memory=None,
                 ),
                 categorical_features,
             ),
@@ -118,7 +120,8 @@ def train_box_score_models(dataset_path: str = "data/training/player_games.parqu
                 steps=[
                     ("preprocessor", _make_preprocessor()),
                     ("model", regressor),
-                ]
+                ],
+                memory=None,
             )
             pipeline.fit(X_train, y_train)
             predictions = pipeline.predict(X_test)

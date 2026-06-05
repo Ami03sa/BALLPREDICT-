@@ -5,7 +5,7 @@ class Settings(BaseSettings):
     app_name: str = "BallPredict"
     environment: str = "development"
     cors_origins: list[str] = ["http://localhost:5173"]
-    postgres_url: str = "postgresql+psycopg://ballpredict:ballpredict@db:5432/ballpredict"
+    postgres_url: str = "postgresql+psycopg://ballpredict@db:5432/ballpredict"
     redis_url: str = "redis://redis:6379/0"
     nba_live_base_url: str = "https://cdn.nba.com/static/json/liveData"
     nba_stats_base_url: str = "https://stats.nba.com/stats"

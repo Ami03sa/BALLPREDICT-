@@ -10,6 +10,8 @@ from app.core.config import settings
 from app.services.live_game_service import live_game_service
 from app.services.ws_manager import ws_manager
 
+API_PREFIX = "/api/v1"
+
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
@@ -32,9 +34,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(health_router, prefix="/api/v1")
-app.include_router(games_router, prefix="/api/v1")
-app.include_router(simulations_router, prefix="/api/v1")
+app.include_router(health_router, prefix=API_PREFIX)
+app.include_router(games_router, prefix=API_PREFIX)
+app.include_router(simulations_router, prefix=API_PREFIX)
 
 
 @app.websocket("/ws/games/{game_id}")
