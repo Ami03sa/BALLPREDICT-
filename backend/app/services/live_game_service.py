@@ -289,12 +289,14 @@ class LiveGameService:
 
         today_ids = {r["game_id"] for r in results}
 
-        # ── Upcoming games (next 2 days) from ESPN ──────────────────────
-        # Show scheduled future games on the slate so users can see what's coming,
-        # but they are locked (days_until > 0) so prediction can't be opened yet.
+        # ── Upcoming games (today if CDN empty + next 2 days) from ESPN ────
+        # When the NBA CDN has no games yet (pre-tip, CDN lags ~1h before tip-off)
+        # we also check ESPN for tonight so the game shows up all day.
+        # Games locked (days_until > 0) until it's their actual game day.
+        espn_start = 0 if not results else 1   # include today only if CDN returned nothing
         try:
             async with httpx.AsyncClient(timeout=10, follow_redirects=True) as client:
-                for delta in range(1, 3):
+                for delta in range(espn_start, 3):
                     future_date = (date.today() + timedelta(days=delta)).strftime("%Y%m%d")
                     r = await client.get(
                         "https://site.api.espn.com/apis/site/v2/sports/basketball/nba/scoreboard",
@@ -347,7 +349,7 @@ class LiveGameService:
                             "away_abbreviation": away_abbr,
                             "home_record": home_c.get("records", [{}])[0].get("summary", ""),
                             "away_record": away_c.get("records", [{}])[0].get("summary", ""),
-                            "prediction_hook": f"Prediction unlocks on game day ({game_date_display})",
+                            "prediction_hook": "Get Prediction" if delta == 0 else f"Prediction unlocks on game day ({game_date_display})",
                         })
         except Exception as exc:
             logger.debug("Upcoming games fetch failed: %s", exc)
