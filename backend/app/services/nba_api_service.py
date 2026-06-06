@@ -398,7 +398,7 @@ def _build_team_state_from_season_stats(team_raw: dict, score: int, season_playe
         u = p.usage_rate
         if u > 0.265 or p.pts_avg > 20.0:
             p.rotation_role = "star"
-        elif u > 0.18 or p.pts_avg > 11.0:
+        elif u > 0.18 or p.pts_avg > 9.5:
             p.rotation_role = "starter"
         elif u > 0.11:
             p.rotation_role = "rotation"
@@ -483,7 +483,7 @@ def _enrich_players_with_season_avgs(team: "TeamGameState", season_players: list
         # Role classification — same thresholds as _build_team_state_from_season_stats
         if usage_rate > 0.265 or pts_avg > 20.0:
             role = "star"
-        elif usage_rate > 0.18 or pts_avg > 11.0:
+        elif usage_rate > 0.18 or pts_avg > 9.5:
             role = "starter"
         elif usage_rate > 0.11:
             role = "rotation"
@@ -586,7 +586,7 @@ def _enrich_players_from_db(team: "TeamGameState") -> int:
         # Role classification — same thresholds as _enrich_players_with_season_avgs
         if usg_avg > 0.265 or pts_avg > 20.0:
             role = "star"
-        elif usg_avg > 0.18 or pts_avg > 11.0:
+        elif usg_avg > 0.18 or pts_avg > 9.5:
             role = "starter"
         elif usg_avg > 0.11:
             role = "rotation"

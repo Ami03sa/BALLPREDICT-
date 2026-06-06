@@ -1056,6 +1056,18 @@ class PredictionEngine:
 
         hot = _hot_factor(player.player_id)
 
+        # ── Playoff hot-factor talent floor ───────────────────────────────────
+        # In playoffs, stars/starters rarely fall far below their talent level
+        # even in cold streaks — motivation and role ensure a floor performance.
+        # Without this, a star at hot=0.78 who averages 18 pts gets projected at
+        # ~10 pts, which massively underestimates games like Fox's 20-pt effort.
+        # Floor: star → 0.87 | starter → 0.85 (rotation/bench unchanged)
+        if is_playoffs:
+            if player.rotation_role == "star":
+                hot = max(0.87, hot)
+            elif player.rotation_role == "starter":
+                hot = max(0.85, hot)
+
         preds = _xgb_predict(player, defense.team_id, is_home, is_playoffs)
 
         if preds is not None:
@@ -1128,11 +1140,17 @@ class PredictionEngine:
                 # a ratio; applying it to the form-base preserves the matchup signal
                 # without letting it fully anchor away from the player's actual form.
                 _opp_factor_pts = _xgb_pts / max(1.0, player.pts_avg)
-                _opp_factor_pts = max(0.75, min(1.20, _opp_factor_pts))
+                # Tighter clamp for stars — prevents XGBoost dragging a 18-pt
+                # star to 9 pts just because of opponent defensive rating features.
+                # Stars: [0.82, 1.15] | Starters: [0.80, 1.18]
+                if player.rotation_role == "star":
+                    _opp_factor_pts = max(0.82, min(1.15, _opp_factor_pts))
+                else:
+                    _opp_factor_pts = max(0.80, min(1.18, _opp_factor_pts))
 
                 _opp_factor_ast = (_xgb_ast / max(0.5, player.ast_avg)
                                    if player.ast_avg > 0.5 else 1.0)
-                _opp_factor_ast = max(0.75, min(1.20, _opp_factor_ast))
+                _opp_factor_ast = max(0.80, min(1.18, _opp_factor_ast))
 
                 # ── Form-anchored prediction ───────────────────────────────────────
                 # pts_avg × hot    = "what should this player score given their form"
