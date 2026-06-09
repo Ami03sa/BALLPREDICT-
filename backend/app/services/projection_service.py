@@ -1776,19 +1776,24 @@ class ProjectionService:
             #   road_fatigue  (travel-based, consecutive road trips)
             #   away_off mult (season-average home/away differential)
             if is_playoffs and not is_home:
-                player_estimate -= 2.0
+                # Reduced from -2.0: away teams can still score big in loud arenas
+                # (SAS scored 115 at MSG in G3). -1.0 preserves the crowd signal
+                # without compounding with TOV and series calibration penalties.
+                player_estimate -= 1.0
 
             if series_eff and series_eff.get("games_played", 0) >= 1:
                 sg = series_eff["games_played"]
 
-                # (a) TOV penalty — every extra turnover above league avg costs ~1.2 pts
+                # (a) TOV penalty — reduced multiplier 1.2→0.8: teams adjust their
+                # ball-handling as a series progresses (SAS cut TOVs from 16→6 in G3).
                 tov_delta = series_eff.get("tov_per_game", _LEAGUE_AVG_TOV) - _LEAGUE_AVG_TOV
-                player_estimate -= tov_delta * 1.2
+                player_estimate -= tov_delta * 0.8
 
                 # (b) Blend player model with actual series scoring.
-                # Each game adds 30% trust in series reality — by game 2 we trust
-                # series data at 60%, fully overriding inflated season ratings.
-                series_scoring_weight = min(0.65, 0.30 * sg)
+                # Reduced weight cap 0.65→0.45: 2 playoff games is a small sample;
+                # over-anchoring to a depressed series avg pulls too far from RS form
+                # (e.g. SAS's 99.5 series avg vs 120 RS avg suppressed them by 20+ pts).
+                series_scoring_weight = min(0.45, 0.20 * sg)
                 series_pts = series_eff["pts_per_game"]
                 player_estimate = (
                     player_estimate * (1 - series_scoring_weight)
@@ -2370,6 +2375,34 @@ class ProjectionService:
 
         home_total += _breakout_boost(home_player_projections, context.home_vegas_total)
         away_total += _breakout_boost(away_player_projections, context.away_vegas_total)
+
+        # ── Series competitive margin cap ─────────────────────────────────
+        # After 2+ games, the series establishes a competitiveness baseline.
+        # When the model predicts a margin more than 2× the series average,
+        # it contradicts observed evidence — both teams have shown how evenly
+        # matched they are.  Pull the margin back while preserving the total
+        # (so NYK 113 / SAS 92 in a tight series becomes NYK 108 / SAS 97,
+        # keeping the combined score at 205 but tightening the split).
+        if is_playoffs and home_series_eff and away_series_eff:
+            _sg_cap = (home_series_eff or {}).get("games_played", 0)
+            if _sg_cap >= 2:
+                _home_ppg    = home_series_eff.get("pts_per_game", 0.0)
+                _away_ppg    = away_series_eff.get("pts_per_game", 0.0)
+                _series_margin = abs(_home_ppg - _away_ppg)
+                _pred_margin   = abs(home_total - away_total)
+                # Only cap when the model is more than 2× the series avg margin
+                if _series_margin > 1.0 and _pred_margin > 2.0 * _series_margin:
+                    _allowed_margin = round(2.0 * _series_margin)
+                    _scale = _allowed_margin / _pred_margin
+                    _mid   = (home_total + away_total) / 2.0
+                    home_total = round(_mid + (home_total - _mid) * _scale)
+                    away_total = round(_mid + (away_total - _mid) * _scale)
+                    logger.info(
+                        "Series margin cap [%s]: series_avg_margin=%.1f pred=%d → capped to %d "
+                        "(home=%d away=%d)",
+                        context.game_id, _series_margin, _pred_margin, _allowed_margin,
+                        home_total, away_total,
+                    )
 
         # ── Blowout detection (separate from base prediction) ────────────
         blowout_info = _compute_blowout_info(
