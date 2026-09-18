@@ -352,7 +352,7 @@ class LiveGameService:
                             # Use cached series record (e.g. "1-0") not ESPN's RS record (e.g. "62-20")
                             "home_record": self._series_record_for(home_abbr),
                             "away_record": self._series_record_for(away_abbr),
-                            "prediction_hook": "Get Prediction" if delta == 0 else f"Prediction unlocks on game day ({game_date_display})",
+                            "prediction_hook": "Get Prediction" if delta <= 1 else f"Prediction available day before ({game_date_display})",
                         })
         except Exception as exc:
             logger.debug("Upcoming games fetch failed: %s", exc)
