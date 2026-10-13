@@ -12,13 +12,15 @@
 body {
   margin: 0;
   min-width: 320px;
-  min-height: 100vh;
+  height: 100%;
   background: #000000;
   color: #ffffff;
+  overflow: hidden;
 }
 
+html { height: 100%; }
 * { box-sizing: border-box; }
-#root { min-height: 100vh; }
+#root { height: 100%; }
 
 .panel {
   @apply border border-white/10 bg-black;
