@@ -300,7 +300,7 @@ function NBAScoreboard({
 
 function PredictingScreen({ label }: { label: string }) {
   return (
-    <div className="flex flex-col items-center justify-center gap-8 px-4 py-20">
+    <main className="min-h-screen bg-black flex flex-col items-center justify-center gap-8 px-4">
       {/* Logo pulse */}
       <div className="relative flex items-center justify-center">
         {/* Outer ring — slow pulse */}
@@ -349,7 +349,7 @@ function PredictingScreen({ label }: { label: string }) {
           40% { opacity: 1; transform: translateY(-4px); }
         }
       `}</style>
-    </div>
+    </main>
   );
 }
 
@@ -357,14 +357,10 @@ export function GameDetailPage({
   gameId,
   onBack,
   onOpenPlayer,
-  onSnapshotLoaded,
-  hideBackButton = false,
 }: {
   gameId: string;
   onBack: () => void;
   onOpenPlayer: (playerId: string) => void;
-  onSnapshotLoaded?: (snapshot: Snapshot) => void;
-  hideBackButton?: boolean;
 }) {
   const [preview, setPreview] = useState<GamePreview | null>(null);
   const [snapshot, setSnapshot] = useState<Snapshot | null>(null);
@@ -383,7 +379,6 @@ export function GameDetailPage({
       ]);
       setPreview(previewData);
       setSnapshot(snapshotData);
-      onSnapshotLoaded?.(snapshotData);
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to load game");
     } finally {
@@ -407,23 +402,21 @@ export function GameDetailPage({
 
   if (error || !preview || !snapshot) {
     return (
-      <div className="px-4 py-6 md:px-8">
+      <main className="min-h-screen bg-black px-4 py-6 md:px-8">
         <div className="mx-auto max-w-4xl flex flex-col gap-5">
-          {!hideBackButton && (
-            <button
-              type="button"
-              onClick={onBack}
-              className="self-start border border-white/10 px-4 py-2 font-mono text-xs uppercase tracking-[0.4em] text-white transition hover:border-white/25"
-            >
-              ← Back
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={onBack}
+            className="self-start border border-white/10 px-4 py-2 font-mono text-xs uppercase tracking-[0.4em] text-white transition hover:border-white/25"
+          >
+            ← Back
+          </button>
           <div className="border border-white/10 bg-black p-8">
             <p className="font-mono text-xs font-bold uppercase tracking-[0.4em] text-warning">Error loading game</p>
             <p className="mt-2 font-mono text-xs text-white">{error ?? "No data returned from API"}</p>
           </div>
         </div>
-      </div>
+      </main>
     );
   }
 
@@ -439,21 +432,17 @@ export function GameDetailPage({
   const awayPredictedScore = snapshot.awayTeam.finalScoreMean;
 
   return (
-    <div className="px-4 py-6 md:px-8">
+    <main className="min-h-screen bg-black px-4 py-6 md:px-8">
       <div className="mx-auto flex max-w-4xl flex-col gap-5">
         {/* Nav row: Back on left, action on right */}
         <div className="flex items-center justify-between">
-          {!hideBackButton ? (
-            <button
-              type="button"
-              onClick={onBack}
-              className="border border-white/10 px-4 py-2 font-mono text-xs uppercase tracking-[0.4em] text-white transition hover:border-white/25"
-            >
-              ← Back
-            </button>
-          ) : (
-            <div />
-          )}
+          <button
+            type="button"
+            onClick={onBack}
+            className="border border-white/10 px-4 py-2 font-mono text-xs uppercase tracking-[0.4em] text-white transition hover:border-white/25"
+          >
+            ← Back
+          </button>
 
           {preview.status === "final" ? (
             /* Final game — show locked label, no refresh */
@@ -505,6 +494,6 @@ export function GameDetailPage({
           onOpenPlayer={onOpenPlayer}
         />
       </div>
-    </div>
+    </main>
   );
 }
