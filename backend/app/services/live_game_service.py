@@ -442,21 +442,33 @@ class LiveGameService:
         home_tc_norm = _ESPN_FIX.get(home_tc.upper(), home_tc.upper())
         away_tc_norm = _ESPN_FIX.get(away_tc.upper(), away_tc.upper())
 
-        # Look up NBA team IDs from the last game cache (stored by fetch_today_slate_and_contexts)
-        home_team_id = 0
-        away_team_id = 0
+        # Hard-coded tricode → NBA team_id (all 30 teams, never changes)
+        _TC_TO_TEAM_ID: dict[str, int] = {
+            "ATL": 1610612737, "BOS": 1610612738, "BKN": 1610612751, "CHA": 1610612766,
+            "CHI": 1610612741, "CLE": 1610612739, "DAL": 1610612742, "DEN": 1610612743,
+            "DET": 1610612765, "GSW": 1610612744, "HOU": 1610612745, "IND": 1610612754,
+            "LAC": 1610612746, "LAL": 1610612747, "MEM": 1610612763, "MIA": 1610612748,
+            "MIL": 1610612749, "MIN": 1610612750, "NOP": 1610612740, "NYK": 1610612752,
+            "OKC": 1610612760, "ORL": 1610612753, "PHI": 1610612755, "PHX": 1610612756,
+            "POR": 1610612757, "SAC": 1610612758, "SAS": 1610612759, "TOR": 1610612761,
+            "UTA": 1610612762, "WAS": 1610612764,
+        }
+
+        # Look up NBA team IDs — prefer game cache, fall back to hard-coded map
+        home_team_id = _TC_TO_TEAM_ID.get(home_tc_norm, 0)
+        away_team_id = _TC_TO_TEAM_ID.get(away_tc_norm, 0)
         try:
             if _GAME_CACHE_PATH.exists():
                 cached = _json.loads(_GAME_CACHE_PATH.read_text())
                 for meta in cached.values():
-                    if meta.get("home_tc", "").upper() == home_tc_norm:
-                        home_team_id = int(meta.get("home_team_id") or 0)
-                    if meta.get("away_tc", "").upper() == away_tc_norm:
-                        away_team_id = int(meta.get("away_team_id") or 0)
-                    if meta.get("home_tc", "").upper() == away_tc_norm:
-                        away_team_id = int(meta.get("home_team_id") or 0)
-                    if meta.get("away_tc", "").upper() == home_tc_norm:
-                        home_team_id = int(meta.get("away_team_id") or 0)
+                    if meta.get("home_tc", "").upper() == home_tc_norm and meta.get("home_team_id"):
+                        home_team_id = int(meta["home_team_id"])
+                    if meta.get("away_tc", "").upper() == away_tc_norm and meta.get("away_team_id"):
+                        away_team_id = int(meta["away_team_id"])
+                    if meta.get("home_tc", "").upper() == away_tc_norm and meta.get("home_team_id"):
+                        away_team_id = int(meta["home_team_id"])
+                    if meta.get("away_tc", "").upper() == home_tc_norm and meta.get("away_team_id"):
+                        home_team_id = int(meta["away_team_id"])
         except Exception:
             pass
 
