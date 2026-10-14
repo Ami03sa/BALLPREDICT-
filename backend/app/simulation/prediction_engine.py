@@ -1370,19 +1370,23 @@ class PredictionEngine:
             try:
                 # Pre-game feature vector — use team season ratings as proxies
                 rest_days = 0 if context.back_to_back else 2
-                elo_diff  = (team.offensive_rating - opponent.offensive_rating) * 2.5
+                # elo_diff is always expressed from the HOME team's perspective
+                # (positive = home team is stronger) to match model training data
+                home_elo_diff = (team.offensive_rating - opponent.offensive_rating) * 2.5 if is_home \
+                                else (opponent.offensive_rating - team.offensive_rating) * 2.5
                 feat_map  = {
                     "is_home":        float(is_home),
                     "rest_days":      float(rest_days),
                     "is_playoffs":    float(context.playoff_intensity >= 0.65),
-                    "elo_diff":       elo_diff,
+                    "elo_diff":       home_elo_diff,
                     "pts_last5_avg":  team.offensive_rating,
                     "pts_last10_avg": team.offensive_rating,
                     "pts_diff_l5":    team.offensive_rating - opponent.defensive_rating,
                 }
                 x_wp = np.array([[feat_map.get(f, 0.0) for f in wp_features]])
+                # prob = P(home team wins); convert to P(this team wins)
                 prob = float(wp_model.predict_proba(x_wp)[0][1])
-                classifier_win_prob = prob
+                classifier_win_prob = prob if is_home else 1 - prob
             except Exception:
                 pass  # fall through to formula-only
 
