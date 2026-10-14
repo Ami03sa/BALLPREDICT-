@@ -117,13 +117,39 @@ class NbaLiveClient:
         players.sort(key=lambda p: float(p.get("MIN") or 0), reverse=True)
         return players
 
+    # team_id → tricode for static-file fallback (covers all 30 teams)
+    _TEAM_ID_TO_TRICODE: dict[int, str] = {
+        1610612737: "ATL", 1610612738: "BOS", 1610612751: "BKN", 1610612766: "CHA",
+        1610612741: "CHI", 1610612739: "CLE", 1610612742: "DAL", 1610612743: "DEN",
+        1610612765: "DET", 1610612744: "GSW", 1610612745: "HOU", 1610612754: "IND",
+        1610612746: "LAC", 1610612747: "LAL", 1610612763: "MEM", 1610612748: "MIA",
+        1610612749: "MIL", 1610612750: "MIN", 1610612740: "NOP", 1610612752: "NYK",
+        1610612760: "OKC", 1610612753: "ORL", 1610612755: "PHI", 1610612756: "PHX",
+        1610612757: "POR", 1610612758: "SAC", 1610612759: "SAS", 1610612761: "TOR",
+        1610612762: "UTA", 1610612764: "WAS",
+    }
+
+    def _load_static_player_averages(self, team_id: int) -> list[dict]:
+        """Load pre-built player averages from git-committed JSON (Railway fallback)."""
+        import json as _json, pathlib as _pathlib
+        path = _pathlib.Path(__file__).parent.parent.parent.parent / "data" / "player_averages.json"
+        if not path.exists():
+            return []
+        try:
+            data = _json.loads(path.read_text())
+            tc = self._TEAM_ID_TO_TRICODE.get(team_id, "")
+            return data.get(tc, [])
+        except Exception:
+            return []
+
     async def fetch_player_season_stats(self, team_id: int) -> list[dict]:
         """Per-game averages for active players on a team.
 
-        Fallback chain for preseason / early season:
+        Fallback chain (handles preseason / Railway datacenter IP blocks):
           1. Current season Regular Season (LastNGames=20, GP>=3)
           2. Current season Pre Season (GP>=1) — covers October preseason
-          3. Previous season Regular Season (GP>=5) — last resort anchor
+          3. Previous season Regular Season (GP>=5) — last resort live data
+          4. Static JSON in git (player_averages.json) — always available on Railway
         """
         # 1. Current regular season
         players = await self._fetch_player_stats_for_season(
@@ -147,7 +173,7 @@ class NbaLiveClient:
         prev = await self._fetch_player_stats_for_season(
             team_id, self._previous_season(), "Regular Season", min_gp=5, last_n=0
         )
-        if prev:
+        if len(prev) >= 5:
             import logging
             logging.getLogger(__name__).info(
                 "Player stats: falling back to %s regular season for team %s (%d players)",
@@ -155,7 +181,18 @@ class NbaLiveClient:
             )
             return prev
 
-        return players  # whatever we had (may be empty)
+        # 4. Static JSON committed to git — always works on Railway even when
+        #    stats.nba.com is blocked (datacenter IP block)
+        static = self._load_static_player_averages(team_id)
+        if static:
+            import logging
+            logging.getLogger(__name__).info(
+                "Player stats: using static player_averages.json for team_id %s (%d players)",
+                team_id, len(static)
+            )
+            return static
+
+        return players  # empty — caller will use minimal team state
 
     # leaguedashteamstats Advanced returns TEAM_NAME (full name), not TEAM_ABBREVIATION
     _TEAM_NAME_TO_TRICODE: dict[str, str] = {
@@ -223,6 +260,24 @@ class NbaLiveClient:
                     len(result), prev, len(fallback),
                 )
                 result = fallback
+
+        # If both live calls failed (e.g. Railway datacenter IP blocked by stats.nba.com),
+        # load from git-committed static JSON so real ratings are always available.
+        if len(result) < 20:
+            try:
+                import json as _json, pathlib as _pathlib
+                path = _pathlib.Path(__file__).parent.parent.parent.parent / "data" / "team_ratings.json"
+                if path.exists():
+                    static = _json.loads(path.read_text())
+                    if len(static) >= 20:
+                        import logging
+                        logging.getLogger(__name__).info(
+                            "Team ratings: using static team_ratings.json (%d teams)", len(static)
+                        )
+                        result = {k: {kk: float(vv) for kk, vv in v.items()} for k, v in static.items()}
+            except Exception:
+                pass
+
         return result
 
     def _current_season(self) -> str:

@@ -1,0 +1,152 @@
+{
+  "ATL": {
+    "off_rating": 115.0,
+    "def_rating": 112.9,
+    "pace": 102.5
+  },
+  "BOS": {
+    "off_rating": 120.0,
+    "def_rating": 111.7,
+    "pace": 95.6
+  },
+  "BKN": {
+    "off_rating": 108.2,
+    "def_rating": 118.2,
+    "pace": 97.6
+  },
+  "CHA": {
+    "off_rating": 118.4,
+    "def_rating": 113.5,
+    "pace": 97.6
+  },
+  "CHI": {
+    "off_rating": 112.1,
+    "def_rating": 117.4,
+    "pace": 103.2
+  },
+  "CLE": {
+    "off_rating": 118.3,
+    "def_rating": 114.1,
+    "pace": 100.7
+  },
+  "DAL": {
+    "off_rating": 110.3,
+    "def_rating": 115.5,
+    "pace": 102.6
+  },
+  "DEN": {
+    "off_rating": 121.2,
+    "def_rating": 116.0,
+    "pace": 99.5
+  },
+  "DET": {
+    "off_rating": 117.3,
+    "def_rating": 108.9,
+    "pace": 99.9
+  },
+  "GSW": {
+    "off_rating": 113.8,
+    "def_rating": 114.4,
+    "pace": 100.0
+  },
+  "HOU": {
+    "off_rating": 117.5,
+    "def_rating": 112.1,
+    "pace": 97.0
+  },
+  "IND": {
+    "off_rating": 110.1,
+    "def_rating": 117.9,
+    "pace": 101.8
+  },
+  "LAC": {
+    "off_rating": 116.3,
+    "def_rating": 115.2,
+    "pace": 97.3
+  },
+  "LAL": {
+    "off_rating": 117.0,
+    "def_rating": 115.5,
+    "pace": 99.2
+  },
+  "MEM": {
+    "off_rating": 112.4,
+    "def_rating": 118.4,
+    "pace": 101.7
+  },
+  "MIA": {
+    "off_rating": 115.8,
+    "def_rating": 113.6,
+    "pace": 104.2
+  },
+  "MIL": {
+    "off_rating": 112.2,
+    "def_rating": 118.3,
+    "pace": 98.3
+  },
+  "MIN": {
+    "off_rating": 115.6,
+    "def_rating": 112.5,
+    "pace": 101.5
+  },
+  "NOP": {
+    "off_rating": 113.3,
+    "def_rating": 117.6,
+    "pace": 101.4
+  },
+  "NYK": {
+    "off_rating": 118.7,
+    "def_rating": 112.3,
+    "pace": 97.7
+  },
+  "OKC": {
+    "off_rating": 117.6,
+    "def_rating": 106.5,
+    "pace": 100.4
+  },
+  "ORL": {
+    "off_rating": 114.2,
+    "def_rating": 113.6,
+    "pace": 100.6
+  },
+  "PHI": {
+    "off_rating": 114.3,
+    "def_rating": 114.4,
+    "pace": 100.4
+  },
+  "PHX": {
+    "off_rating": 114.2,
+    "def_rating": 112.9,
+    "pace": 98.1
+  },
+  "POR": {
+    "off_rating": 113.1,
+    "def_rating": 113.5,
+    "pace": 101.6
+  },
+  "SAC": {
+    "off_rating": 110.6,
+    "def_rating": 120.3,
+    "pace": 100.1
+  },
+  "SAS": {
+    "off_rating": 118.7,
+    "def_rating": 110.4,
+    "pace": 100.7
+  },
+  "TOR": {
+    "off_rating": 115.0,
+    "def_rating": 112.1,
+    "pace": 99.2
+  },
+  "UTA": {
+    "off_rating": 112.7,
+    "def_rating": 120.8,
+    "pace": 103.5
+  },
+  "WAS": {
+    "off_rating": 109.7,
+    "def_rating": 121.5,
+    "pace": 102.5
+  }
+}
