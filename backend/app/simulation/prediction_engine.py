@@ -1375,14 +1375,14 @@ class PredictionEngine:
                     "is_home":        float(is_home),
                     "rest_days":      float(rest_days),
                     "is_playoffs":    float(context.playoff_intensity >= 0.65),
-                    "elo_diff":       elo_diff if is_home else -elo_diff,
+                    "elo_diff":       elo_diff,
                     "pts_last5_avg":  team.offensive_rating,
                     "pts_last10_avg": team.offensive_rating,
                     "pts_diff_l5":    team.offensive_rating - opponent.defensive_rating,
                 }
                 x_wp = np.array([[feat_map.get(f, 0.0) for f in wp_features]])
                 prob = float(wp_model.predict_proba(x_wp)[0][1])
-                classifier_win_prob = prob if is_home else 1 - prob
+                classifier_win_prob = prob
             except Exception:
                 pass  # fall through to formula-only
 

@@ -135,46 +135,68 @@ class NbaLiveClient:
     async def fetch_team_ratings(self) -> dict[str, dict[str, float]]:
         """
         Fetch real offensive rating, defensive rating, and pace for every team.
-        Returns {team_tricode: {off_rating, def_rating, pace}} for the current season.
+        Falls back to previous season when current season has too few games
+        (e.g. start of season or pre-season).
         """
-        try:
-            data = await self._stats_get("leaguedashteamstats", {
-                "Season": self._current_season(),
-                "SeasonType": "Regular Season",
-                "MeasureType": "Advanced",
-                "PerMode": "PerGame",
-                "LeagueID": "00",
-                "DateFrom": "", "DateTo": "", "GameScope": "", "GameSegment": "",
-                "ISTRound": "", "LastNGames": 0, "Location": "", "Month": 0,
-                "OpponentTeamID": 0, "Outcome": "", "PORound": 0,
-                "PaceAdjust": "N", "Period": 0, "PlayerExperience": "",
-                "PlayerPosition": "", "PlusMinus": "N", "Rank": "N",
-                "SeasonSegment": "", "ShotClockRange": "", "StarterBench": "",
-                "TwoWay": 0, "VsConference": "", "VsDivision": "",
-            })
-            rs = next((r for r in data.get("resultSets", []) if r["name"] == "LeagueDashTeamStats"), {})
-            headers = rs.get("headers", [])
-            rows = [dict(zip(headers, row)) for row in rs.get("rowSet", [])]
-            result: dict[str, dict[str, float]] = {}
-            for row in rows:
-                # API returns full team name; map to tricode
-                team_name = str(row.get("TEAM_NAME", ""))
-                tc = self._TEAM_NAME_TO_TRICODE.get(team_name, "")
-                if not tc:
-                    continue
-                result[tc] = {
-                    "off_rating": float(row.get("OFF_RATING") or 114.0),
-                    "def_rating": float(row.get("DEF_RATING") or 114.0),
-                    "pace":       float(row.get("PACE")       or 98.0),
-                }
-            return result
-        except Exception:
-            return {}
+        async def _fetch_for_season(season: str) -> dict[str, dict[str, float]]:
+            try:
+                data = await self._stats_get("leaguedashteamstats", {
+                    "Season": season,
+                    "SeasonType": "Regular Season",
+                    "MeasureType": "Advanced",
+                    "PerMode": "PerGame",
+                    "LeagueID": "00",
+                    "DateFrom": "", "DateTo": "", "GameScope": "", "GameSegment": "",
+                    "ISTRound": "", "LastNGames": 0, "Location": "", "Month": 0,
+                    "OpponentTeamID": 0, "Outcome": "", "PORound": 0,
+                    "PaceAdjust": "N", "Period": 0, "PlayerExperience": "",
+                    "PlayerPosition": "", "PlusMinus": "N", "Rank": "N",
+                    "SeasonSegment": "", "ShotClockRange": "", "StarterBench": "",
+                    "TwoWay": 0, "VsConference": "", "VsDivision": "",
+                })
+                rs = next((r for r in data.get("resultSets", []) if r["name"] == "LeagueDashTeamStats"), {})
+                headers = rs.get("headers", [])
+                rows = [dict(zip(headers, row)) for row in rs.get("rowSet", [])]
+                result: dict[str, dict[str, float]] = {}
+                for row in rows:
+                    team_name = str(row.get("TEAM_NAME", ""))
+                    tc = self._TEAM_NAME_TO_TRICODE.get(team_name, "")
+                    if not tc:
+                        continue
+                    result[tc] = {
+                        "off_rating": float(row.get("OFF_RATING") or 114.0),
+                        "def_rating": float(row.get("DEF_RATING") or 114.0),
+                        "pace":       float(row.get("PACE")       or 98.0),
+                    }
+                return result
+            except Exception:
+                return {}
+
+        result = await _fetch_for_season(self._current_season())
+        # If current season has fewer than 20 teams (early season / pre-season), fall back
+        if len(result) < 20:
+            prev = self._previous_season()
+            fallback = await _fetch_for_season(prev)
+            if fallback:
+                import logging
+                logging.getLogger(__name__).info(
+                    "Team ratings: current season has %d teams, using %s fallback (%d teams)",
+                    len(result), prev, len(fallback),
+                )
+                result = fallback
+        return result
 
     def _current_season(self) -> str:
         from datetime import date
         d = date.today()
         return f"{d.year}-{str(d.year + 1)[2:]}" if d.month >= 10 else f"{d.year - 1}-{str(d.year)[2:]}"
+
+    def _previous_season(self) -> str:
+        from datetime import date
+        d = date.today()
+        if d.month >= 10:
+            return f"{d.year - 1}-{str(d.year)[2:]}"
+        return f"{d.year - 2}-{str(d.year - 1)[2:]}"
 
     def _parse_stats_boxscore(self, data: dict) -> dict:
         """Convert stats.nba.com resultSets format → CDN-compatible dict."""
