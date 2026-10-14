@@ -413,18 +413,21 @@ class LiveGameService:
         if game_id in self._contexts:
             return self._contexts[game_id], slate_row
 
-        # ── 3. Try CDN – it may have come online since startup ───────────────
-        try:
-            _, contexts = await nba_api_service.fetch_today_slate_and_contexts()
-            for real_id, ctx in (contexts or {}).items():
-                ht = ctx.home_team.team_id.upper()
-                at = ctx.away_team.team_id.upper()
-                if ht == home_tc.upper() and at == away_tc.upper():
-                    self._contexts[game_id] = ctx
-                    logger.info("upcoming %s resolved from CDN as %s", game_id, real_id)
-                    return ctx, slate_row
-        except Exception:
-            pass
+        # ── 2b. Check startup contexts by team abbreviation (startup may have used
+        #         a different key, e.g. a CDN game_id vs ESPN upcoming_ id) ───────
+        _ESPN_FIX_ABBRV = {"NY": "NYK", "SA": "SAS", "GS": "GSW", "NO": "NOP"}
+        home_norm = _ESPN_FIX_ABBRV.get(home_tc.upper(), home_tc.upper())
+        away_norm = _ESPN_FIX_ABBRV.get(away_tc.upper(), away_tc.upper())
+        for cached_id, cached_ctx in self._contexts.items():
+            ht = cached_ctx.home_team.team_id.upper()
+            at = cached_ctx.away_team.team_id.upper()
+            if ht == home_norm and at == away_norm:
+                self._contexts[game_id] = cached_ctx
+                logger.info("upcoming %s resolved from startup cache (key %s)", game_id, cached_id)
+                return cached_ctx, slate_row
+
+        # ── 3. Skip full CDN re-fetch (too slow for preseason) — go straight to
+        #         per-game live stats build below ──────────────────────────────────
 
         # ── 4. Same pipeline as Game 1: live season stats API → build team ──────
         import json as _json
@@ -432,6 +435,7 @@ class LiveGameService:
             _build_team_state_from_season_stats,
             _enrich_players_from_db,
             _build_minimal_team_state,
+            _build_team_from_db,
         )
 
         _ESPN_FIX = {"NY": "NYK", "SA": "SAS", "GS": "GSW", "NO": "NOP"}
@@ -480,12 +484,15 @@ class LiveGameService:
             away_team = _build_team_state_from_season_stats(away_raw, 0, away_season_stats, team_ratings)
             logger.info("Upcoming %s: built from live season stats (%d + %d players)", game_id, len(home_team.players), len(away_team.players))
         else:
-            # Last resort — minimal (no players); DB enrichment below won't add players but at least no crash
-            home_team = _build_minimal_team_state(home_raw, 0, team_ratings)
-            away_team = _build_minimal_team_state(away_raw, 0, team_ratings)
-            logger.warning("Upcoming %s: season stats unavailable, using minimal team state", game_id)
+            # Preseason / no live data — build rosters from DB (last completed regular season)
+            home_team = _build_team_from_db(home_raw, 0, team_ratings)
+            away_team = _build_team_from_db(away_raw, 0, team_ratings)
+            logger.warning(
+                "Upcoming %s: live season stats unavailable, built from DB (%d + %d players)",
+                game_id, len(home_team.players), len(away_team.players),
+            )
 
-        # DB enrichment fallback — same as fetch_today_slate_and_contexts
+        # Enrich any players still missing pts_avg (e.g. rookies not in DB)
         _enrich_players_from_db(home_team)
         _enrich_players_from_db(away_team)
 

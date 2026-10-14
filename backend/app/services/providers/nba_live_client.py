@@ -88,35 +88,74 @@ class NbaLiveClient:
     async def fetch_playbyplay(self, game_id: str) -> dict:
         return await self._cdn_get(f"playbyplay/playbyplay_{game_id}.json")
 
-    async def fetch_player_season_stats(self, team_id: int) -> list[dict]:
-        """Per-game averages for active players on a team over the last 20 games.
-
-        Using LastNGames=20 ensures we only get players currently on the roster —
-        players traded away won't have played 20 games for this team, so they
-        either won't appear or will have very low GP and get filtered out.
-        """
-        data = await self._stats_get("leaguedashplayerstats", {
-            "TeamID": team_id,
-            "PerMode": "PerGame",
-            "Season": self._current_season(),
-            "SeasonType": "Regular Season",
-            "MeasureType": "Base",
-            "LeagueID": "00",
-            "DateFrom": "", "DateTo": "", "GameScope": "", "GameSegment": "",
-            "ISTRound": "", "LastNGames": 20, "Location": "", "Month": 0,
-            "OpponentTeamID": 0, "Outcome": "", "PORound": 0,
-            "PaceAdjust": "N", "Period": 0, "PlayerExperience": "",
-            "PlayerPosition": "", "PlusMinus": "N", "Rank": "N",
-            "SeasonSegment": "", "ShotClockRange": "", "StarterBench": "",
-            "TwoWay": 0, "VsConference": "", "VsDivision": "",
-        })
+    async def _fetch_player_stats_for_season(
+        self, team_id: int, season: str, season_type: str, min_gp: int = 3, last_n: int = 20
+    ) -> list[dict]:
+        """Helper: fetch leaguedashplayerstats for one season/type combo."""
+        try:
+            data = await self._stats_get("leaguedashplayerstats", {
+                "TeamID": team_id,
+                "PerMode": "PerGame",
+                "Season": season,
+                "SeasonType": season_type,
+                "MeasureType": "Base",
+                "LeagueID": "00",
+                "DateFrom": "", "DateTo": "", "GameScope": "", "GameSegment": "",
+                "ISTRound": "", "LastNGames": last_n, "Location": "", "Month": 0,
+                "OpponentTeamID": 0, "Outcome": "", "PORound": 0,
+                "PaceAdjust": "N", "Period": 0, "PlayerExperience": "",
+                "PlayerPosition": "", "PlusMinus": "N", "Rank": "N",
+                "SeasonSegment": "", "ShotClockRange": "", "StarterBench": "",
+                "TwoWay": 0, "VsConference": "", "VsDivision": "",
+            })
+        except Exception:
+            return []
         rs = next((r for r in data.get("resultSets", []) if r["name"] == "LeagueDashPlayerStats"), {})
         headers = rs.get("headers", [])
         players = [dict(zip(headers, row)) for row in rs.get("rowSet", [])]
-        # Must have played at least 3 of the last 20 games for this team
-        players = [p for p in players if float(p.get("GP") or 0) >= 3]
+        players = [p for p in players if float(p.get("GP") or 0) >= min_gp]
         players.sort(key=lambda p: float(p.get("MIN") or 0), reverse=True)
         return players
+
+    async def fetch_player_season_stats(self, team_id: int) -> list[dict]:
+        """Per-game averages for active players on a team.
+
+        Fallback chain for preseason / early season:
+          1. Current season Regular Season (LastNGames=20, GP>=3)
+          2. Current season Pre Season (GP>=1) — covers October preseason
+          3. Previous season Regular Season (GP>=5) — last resort anchor
+        """
+        # 1. Current regular season
+        players = await self._fetch_player_stats_for_season(
+            team_id, self._current_season(), "Regular Season", min_gp=3, last_n=20
+        )
+        if len(players) >= 5:
+            return players
+
+        # 2. Current preseason (October / early November)
+        pre = await self._fetch_player_stats_for_season(
+            team_id, self._current_season(), "Pre Season", min_gp=1, last_n=0
+        )
+        if len(pre) >= 5:
+            import logging
+            logging.getLogger(__name__).info(
+                "Player stats: using preseason data for team %s (%d players)", team_id, len(pre)
+            )
+            return pre
+
+        # 3. Previous regular season as anchor
+        prev = await self._fetch_player_stats_for_season(
+            team_id, self._previous_season(), "Regular Season", min_gp=5, last_n=0
+        )
+        if prev:
+            import logging
+            logging.getLogger(__name__).info(
+                "Player stats: falling back to %s regular season for team %s (%d players)",
+                self._previous_season(), team_id, len(prev)
+            )
+            return prev
+
+        return players  # whatever we had (may be empty)
 
     # leaguedashteamstats Advanced returns TEAM_NAME (full name), not TEAM_ABBREVIATION
     _TEAM_NAME_TO_TRICODE: dict[str, str] = {
