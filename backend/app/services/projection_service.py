@@ -868,9 +868,9 @@ def _series_win_prob(w: int, l: int, memo: dict | None = None) -> float:
     """
     if memo is None:
         memo = {}
-    if w == 4:
+    if w >= 4:
         return 1.0
-    if l == 4:
+    if l >= 4:
         return 0.0
     if (w, l) in memo:
         return memo[(w, l)]

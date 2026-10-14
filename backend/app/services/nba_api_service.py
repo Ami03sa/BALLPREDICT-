@@ -925,6 +925,8 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
             home_vegas = None
             away_vegas = None
 
+        # Game ID prefix: 004 = playoffs, 002 = regular season, 001 = pre-season
+        _is_playoff_game = game_id.startswith("004")
         contexts[game_id] = GameContext(
             game_id=game_id,
             quarter=period,
@@ -937,7 +939,7 @@ async def fetch_today_slate_and_contexts() -> tuple[dict[str, dict], dict[str, G
             momentum=0.50,
             fatigue_pressure=0.20,
             whistle_tightness=0.43,
-            playoff_intensity=0.55,
+            playoff_intensity=0.80 if _is_playoff_game else 0.40,
             live_pace_multiplier=1.0,
             home_vegas_total=home_vegas,
             away_vegas_total=away_vegas,
