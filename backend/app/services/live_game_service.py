@@ -411,10 +411,7 @@ class LiveGameService:
         snapshot = await loop.run_in_executor(
             None, partial(projection_service.build_snapshot, ctx, status="scheduled", possession_feed=[])
         )
-        fake_slate = {"game_id": game_id, "status": "upcoming", "home_abbreviation": home_norm,
-                      "away_abbreviation": away_norm, "home_team": home_norm, "away_team": away_norm,
-                      "tipoff": "TBD", "home_record": "", "away_record": ""}
-        return self._build_preview_payload(ctx, fake_slate)
+        return snapshot
 
     async def _resolve_upcoming_context_by_teams(
         self, game_id: str, home_tc_norm: str, away_tc_norm: str, slate_row: dict
