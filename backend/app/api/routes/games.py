@@ -1,8 +1,11 @@
+import logging
 import traceback
-from fastapi import APIRouter
+from fastapi import APIRouter, HTTPException
 from fastapi.responses import JSONResponse
 
 from app.services.live_game_service import live_game_service
+
+_log = logging.getLogger(__name__)
 from app.services import projection_service as _ps
 from app.services import nba_api_service as _nas
 from app.services.injury_lineup_service import _game_cache as _injury_cache
@@ -22,9 +25,9 @@ async def predict_by_teams(home: str, away: str):
     Does not require a live slate — works even when NBA CDN or ESPN are unavailable."""
     try:
         return await live_game_service.predict_by_teams(home, away)
-    except Exception:
-        tb = traceback.format_exc()
-        return JSONResponse(status_code=500, content={"error": tb})
+    except Exception as exc:
+        _log.error("predict_by_teams(%s, %s) failed: %s", home, away, traceback.format_exc())
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
 
 
 @router.get("/live")
