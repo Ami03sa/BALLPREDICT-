@@ -1,4 +1,6 @@
+import traceback
 from fastapi import APIRouter
+from fastapi.responses import JSONResponse
 
 from app.services.live_game_service import live_game_service
 from app.services import projection_service as _ps
@@ -15,10 +17,14 @@ async def list_slate_games() -> list[dict]:
 
 
 @router.get("/predict")
-async def predict_by_teams(home: str, away: str) -> dict:
+async def predict_by_teams(home: str, away: str):
     """Get a game prediction directly from team tricodes (e.g. ?home=MIA&away=ORL).
     Does not require a live slate — works even when NBA CDN or ESPN are unavailable."""
-    return await live_game_service.predict_by_teams(home, away)
+    try:
+        return await live_game_service.predict_by_teams(home, away)
+    except Exception:
+        tb = traceback.format_exc()
+        return JSONResponse(status_code=500, content={"error": tb})
 
 
 @router.get("/live")
