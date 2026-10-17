@@ -369,6 +369,117 @@ class LiveGameService:
         slate_row = self._build_live_slate_row(scoreboard_game) if scoreboard_game else self._slate.get(game_id, {"game_id": game_id, "status": "scheduled", "tipoff": "TBD", "broadcast": "", "arena": "", "headline": "", "home_team": "", "away_team": "", "home_abbreviation": "", "away_abbreviation": "", "home_record": "", "away_record": "", "prediction_hook": ""})
         return self._build_preview_payload(context, slate_row)
 
+    async def predict_by_teams(self, home_tc: str, away_tc: str) -> dict:
+        """Build a prediction directly from team tricodes, no slate lookup needed."""
+        _ESPN_FIX = {"NY": "NYK", "SA": "SAS", "GS": "GSW", "NO": "NOP", "GS": "GSW", "UTAH": "UTA"}
+        home_norm = _ESPN_FIX.get(home_tc.upper(), home_tc.upper())
+        away_norm = _ESPN_FIX.get(away_tc.upper(), away_tc.upper())
+
+        # Stable game_id for caching
+        game_id = f"teams_{home_norm}_{away_norm}"
+
+        # Reuse cached context if already built
+        if game_id in self._contexts:
+            ctx = self._contexts[game_id]
+        else:
+            # Check existing contexts by team abbreviation (may have been built via slate or startup)
+            for cached_id, cached_ctx in self._contexts.items():
+                ht = cached_ctx.home_team.team_id.upper()
+                at = cached_ctx.away_team.team_id.upper()
+                if ht == home_norm and at == away_norm:
+                    self._contexts[game_id] = cached_ctx
+                    ctx = cached_ctx
+                    break
+            else:
+                # Build minimal slate_row and use same pipeline as _resolve_upcoming_context
+                fake_slate_row = {
+                    "game_id": game_id,
+                    "status": "upcoming",
+                    "home_abbreviation": home_norm,
+                    "away_abbreviation": away_norm,
+                    "home_team": home_norm,
+                    "away_team": away_norm,
+                    "tipoff": "TBD",
+                    "home_record": "",
+                    "away_record": "",
+                }
+                ctx, _ = await self._resolve_upcoming_context_by_teams(
+                    game_id, home_norm, away_norm, fake_slate_row
+                )
+
+        loop = asyncio.get_event_loop()
+        snapshot = await loop.run_in_executor(
+            None, partial(projection_service.build_snapshot, ctx, status="scheduled", possession_feed=[])
+        )
+        fake_slate = {"game_id": game_id, "status": "upcoming", "home_abbreviation": home_norm,
+                      "away_abbreviation": away_norm, "home_team": home_norm, "away_team": away_norm,
+                      "tipoff": "TBD", "home_record": "", "away_record": ""}
+        return self._build_preview_payload(ctx, fake_slate)
+
+    async def _resolve_upcoming_context_by_teams(
+        self, game_id: str, home_tc_norm: str, away_tc_norm: str, slate_row: dict
+    ) -> tuple[GameContext, dict]:
+        """Same as _resolve_upcoming_context but takes team abbreviations directly, no slate needed."""
+        import json as _json
+        from app.services.nba_api_service import (
+            _build_team_state_from_season_stats,
+            _enrich_players_from_db,
+            _build_team_from_db,
+        )
+
+        _TC_TO_TEAM_ID: dict[str, int] = {
+            "ATL": 1610612737, "BOS": 1610612738, "BKN": 1610612751, "CHA": 1610612766,
+            "CHI": 1610612741, "CLE": 1610612739, "DAL": 1610612742, "DEN": 1610612743,
+            "DET": 1610612765, "GSW": 1610612744, "HOU": 1610612745, "IND": 1610612754,
+            "LAC": 1610612746, "LAL": 1610612747, "MEM": 1610612763, "MIA": 1610612748,
+            "MIL": 1610612749, "MIN": 1610612750, "NOP": 1610612740, "NYK": 1610612752,
+            "OKC": 1610612760, "ORL": 1610612753, "PHI": 1610612755, "PHX": 1610612756,
+            "POR": 1610612757, "SAC": 1610612758, "SAS": 1610612759, "TOR": 1610612761,
+            "UTA": 1610612762, "WAS": 1610612764,
+        }
+
+        home_team_id = _TC_TO_TEAM_ID.get(home_tc_norm, 0)
+        away_team_id = _TC_TO_TEAM_ID.get(away_tc_norm, 0)
+
+        team_ratings: dict = {}
+        try:
+            team_ratings = await nba_live_client.fetch_team_ratings() or {}
+        except Exception:
+            pass
+
+        home_raw = {"teamTricode": home_tc_norm, "teamId": home_team_id, "teamCity": "", "teamName": home_tc_norm}
+        away_raw = {"teamTricode": away_tc_norm, "teamId": away_team_id, "teamCity": "", "teamName": away_tc_norm}
+
+        home_season_stats, away_season_stats = [], []
+        try:
+            home_season_stats, away_season_stats = await asyncio.gather(
+                nba_live_client.fetch_player_season_stats(home_team_id),
+                nba_live_client.fetch_player_season_stats(away_team_id),
+            )
+        except Exception as exc:
+            logger.warning("Season stats fetch failed for %s vs %s: %s", home_tc_norm, away_tc_norm, exc)
+
+        if home_season_stats and away_season_stats:
+            from app.services.nba_api_service import _build_team_state_from_season_stats as _bts
+            home_team = _bts(home_raw, 0, home_season_stats, team_ratings)
+            away_team = _bts(away_raw, 0, away_season_stats, team_ratings)
+        else:
+            home_team = _build_team_from_db(home_raw, 0, team_ratings)
+            away_team = _build_team_from_db(away_raw, 0, team_ratings)
+
+        _enrich_players_from_db(home_team)
+        _enrich_players_from_db(away_team)
+
+        ctx = GameContext(
+            game_id=game_id, quarter=0, clock="", home_team=home_team, away_team=away_team,
+            score_margin=0, home_advantage=2.4, overtime_probability=0.02, momentum=0.0,
+            fatigue_pressure=0.5, whistle_tightness=0.48, playoff_intensity=0.55,
+            live_pace_multiplier=1.0, injury_risk_flags=[], back_to_back=False,
+            home_vegas_total=None, away_vegas_total=None,
+        )
+        self._contexts[game_id] = ctx
+        return ctx, slate_row
+
     async def get_game_snapshot(self, game_id: str) -> GameSnapshot:
         if game_id.startswith("upcoming_"):
             context, _ = await self._resolve_upcoming_context(game_id)
@@ -383,7 +494,18 @@ class LiveGameService:
         return snapshot
 
     async def get_player_detail(self, game_id: str, player_id: str) -> PlayerDetailResponse:
-        if game_id.startswith("upcoming_"):
+        if game_id.startswith("teams_"):
+            # teams_HOME_AWAY format from predict_by_teams endpoint
+            context = self._contexts.get(game_id)
+            if not context:
+                parts = game_id.split("_", 2)
+                if len(parts) == 3:
+                    _, home_tc, away_tc = parts
+                    context, _ = await self._resolve_upcoming_context_by_teams(game_id, home_tc, away_tc, {})
+                else:
+                    raise HTTPException(status_code=404, detail=f"Game {game_id} not found")
+            status = "scheduled"
+        elif game_id.startswith("upcoming_"):
             context, _ = await self._resolve_upcoming_context(game_id)
             status = "scheduled"
         else:

@@ -14,6 +14,13 @@ async def list_slate_games() -> list[dict]:
     return await live_game_service.list_slate_games()
 
 
+@router.get("/predict")
+async def predict_by_teams(home: str, away: str) -> dict:
+    """Get a game prediction directly from team tricodes (e.g. ?home=MIA&away=ORL).
+    Does not require a live slate — works even when NBA CDN or ESPN are unavailable."""
+    return await live_game_service.predict_by_teams(home, away)
+
+
 @router.get("/live")
 async def list_live_games() -> list[dict]:
     return await live_game_service.list_live_games()
