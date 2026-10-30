@@ -272,10 +272,15 @@ def _fetch_player_series_usage(player_ids: list[str], opp_abbr: str) -> dict[str
         return {}
 
 
-def _fetch_player_game_data(player_ids: list[str]) -> tuple[dict[str, float], dict[str, float]]:
+def _fetch_player_game_data(
+    player_ids: list[str], is_playoffs: bool = False
+) -> tuple[dict[str, float], dict[str, float]]:
     """
     Returns (avg_min, play_prob) dicts keyed by player_id.
-      avg_min   — average minutes over last 10 played games
+      avg_min   — average minutes over the last 10 played games for playoffs. For regular
+                  season: last 30 regular-season games only, since playoff rotations run
+                  stars ~5 minutes longer and a 10-game window at season's end is skewed
+                  by resting starters
       play_prob — games_played / team_total_games, clamped [0.25, 1.0]
     """
     if not player_ids or not _DB_PATH.exists():
@@ -283,6 +288,8 @@ def _fetch_player_game_data(player_ids: list[str]) -> tuple[dict[str, float], di
     try:
         placeholders = ",".join("?" * len(player_ids))
         conn = sqlite3.connect(str(_DB_PATH))
+        season_type_filter = "" if is_playoffs else "AND season_type = 'Regular Season'"
+        window = 10 if is_playoffs else 30
 
         min_rows = conn.execute(
             f"""
@@ -291,9 +298,9 @@ def _fetch_player_game_data(player_ids: list[str]) -> tuple[dict[str, float], di
                 SELECT player_id, min,
                        ROW_NUMBER() OVER (PARTITION BY player_id ORDER BY game_date DESC) AS rn
                 FROM player_game_logs
-                WHERE player_id IN ({placeholders}) AND min > 0
+                WHERE player_id IN ({placeholders}) AND min > 0 {season_type_filter}
             ) sub
-            WHERE rn <= 10
+            WHERE rn <= {window}
             GROUP BY player_id
             """,
             player_ids,
@@ -330,6 +337,11 @@ def _fetch_player_game_data(player_ids: list[str]) -> tuple[dict[str, float], di
         for pid in player_ids:
             avg_min.setdefault(pid, 15.0)
             play_prob.setdefault(pid, 0.75)
+            # Rotation players not flagged out are very likely to play; last season's
+            # games-played share reflects past injuries, which the DNP/injury-report
+            # flags already model for tonight. Don't discount them a second time.
+            if avg_min[pid] >= 20.0:
+                play_prob[pid] = max(play_prob[pid], 0.95)
 
         return avg_min, play_prob
     except Exception:
@@ -1044,20 +1056,42 @@ def _fetch_series_ot_scoring_avgs(
         return None, None
 
 
-def _usage_boost(projections: list, _avg_min: dict, _play_prob: dict) -> float:
+_MAX_VACATED_MINUTES_BOOST = 1.18
+
+
+def _minute_shares(projections: list, avg_min: dict) -> dict[str, float]:
     """
-    When DNP players held a share of projected pts, boost remaining active players.
-    Capped at 1.25× to prevent over-inflation.
+    Hand out exactly 240 minutes to active players in order of typical minutes and
+    return each player's share (0-1) of their usual minutes that fits. Per-game
+    means are conditional on a player's usual minutes, so counting a 20-man roster
+    at full value would count far more than one game's worth of minutes.
+    If the active players' typical minutes fall short of 240 (stars out), the
+    vacated minutes are spread over the rest (shares > 1), capped to avoid
+    over-inflation. DNP projections are zeroed, so that has to come from minutes.
     """
-    dnp = [p for p in projections if p.availability_status == "dnp"]
     active = [p for p in projections if p.availability_status != "dnp"]
-    if not dnp or not active:
-        return 1.0
-    dnp_pts = sum(p.projected_stats.mean.points for p in dnp)
-    active_pts = sum(p.projected_stats.mean.points for p in active)
-    if active_pts < 1.0:
-        return 1.0
-    return min(1.18, (active_pts + dnp_pts) / active_pts)
+    ordered = sorted(active, key=lambda p: avg_min.get(p.player_id, 15.0), reverse=True)
+    remaining = _GAME_MINUTES
+    shares: dict[str, float] = {}
+    for p in ordered:
+        minutes = max(avg_min.get(p.player_id, 15.0), 1.0)
+        shares[p.player_id] = max(0.0, min(1.0, remaining / minutes))
+        remaining -= minutes
+    if remaining > 0:
+        filled = _GAME_MINUTES - remaining
+        boost = min(_MAX_VACATED_MINUTES_BOOST, _GAME_MINUTES / max(filled, 1.0))
+        shares = {pid: s * boost for pid, s in shares.items()}
+    return shares
+
+
+def _rotation_points(projections: list, avg_min: dict, play_prob: dict) -> float:
+    """Expected team points from the 240-minute fill (see _minute_shares)."""
+    shares = _minute_shares(projections, avg_min)
+    return sum(
+        p.projected_stats.mean.points * play_prob.get(p.player_id, 0.75) * shares.get(p.player_id, 0.0)
+        for p in projections
+        if p.availability_status != "dnp"
+    )
 
 
 def _rescale_player_pts(proj: PlayerProjection, scale: float) -> PlayerProjection:
@@ -1419,7 +1453,9 @@ class ProjectionService:
             p.player_id for p in home_player_projections + away_player_projections
             if p.availability_status != "dnp"
         ]
-        avg_min, play_prob = _fetch_player_game_data(all_active_ids)
+        avg_min, play_prob = _fetch_player_game_data(
+            all_active_ids, is_playoffs=context.playoff_intensity >= 0.55
+        )
         volatility = _fetch_player_volatility(all_active_ids)
 
         # ── Feature 4: Minutes projection based on availability status ────────
@@ -1671,24 +1707,11 @@ class ProjectionService:
             h2h_factor: float = 0.0,
             coach_adjustment: float = 0.0,
         ) -> int:
-            active = [p for p in projections if p.availability_status != "dnp"]
-
             # ── Player model estimate ───────────────────────────────────────
-            boost = _usage_boost(projections, avg_min, play_prob)
-
-            # XGBoost predicts full-game stats per player — already calibrated to
-            # each player's typical playing time from training data.  We apply
-            # play_prob only as a DNP-risk discount (starters ≈ 0.92–0.98, fringe
-            # bench ≈ 0.65–0.75).  We do NOT apply an extra minute-normalization on
-            # top, because that double-counts: the model already knows a bench player
-            # averages 8 minutes, so predicting 3 pts for them is already correct —
-            # cutting it again by 240/total_proj_min would under-estimate team scoring
-            # by 20–30% and produce unrealistically low scores (e.g. 97-95 instead
-            # of the Vegas-implied 111-107).
-            prob_weighted_pts = sum(
-                p.projected_stats.mean.points * play_prob.get(p.player_id, 0.75)
-                for p in active
-            ) * boost
+            # XGBoost predicts full-game stats per player, already calibrated to that
+            # player's typical minutes. play_prob is a DNP-risk discount only, and the
+            # 240-minute fill keeps a deep roster from being counted past a real game.
+            prob_weighted_pts = _rotation_points(projections, avg_min, play_prob)
             player_estimate = prob_weighted_pts
 
             # Recent team form: hot teams score more, cold teams score less
@@ -2033,18 +2056,15 @@ class ProjectionService:
         _ROLE_BOOST_CAP = {"star": 1.40, "starter": 1.30, "rotation": 1.20, "bench": 1.12}
 
         def _apply_scale(projections: list, team_total: int) -> list[PlayerProjection]:
-            active = [p for p in projections if p.availability_status != "dnp"]
-            prob_weighted_raw = sum(
-                p.projected_stats.mean.points * play_prob.get(p.player_id, 0.75)
-                for p in active
-            )
+            shares = _minute_shares(projections, avg_min)
+            prob_weighted_raw = _rotation_points(projections, avg_min, play_prob)
             team_scale = team_total / max(1.0, prob_weighted_raw)
             scaled = []
             for p in projections:
                 if p.availability_status == "dnp":
                     scaled.append(p)
                     continue
-                combined = team_scale * play_prob.get(p.player_id, 0.75)
+                combined = team_scale * play_prob.get(p.player_id, 0.75) * shares.get(p.player_id, 0.0)
                 # Cap: no player's pts can grow more than their role allows.
                 # e.g. Caruso (bench, 8 pts base) → max 8 × 1.20 = 9.6 pts
                 role_cap = _ROLE_BOOST_CAP.get(p.rotation_role, 1.25)

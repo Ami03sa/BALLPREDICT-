@@ -8,6 +8,7 @@ import json
 import logging
 import sqlite3
 from datetime import datetime, timedelta
+from functools import lru_cache
 from pathlib import Path
 
 from app.simulation.state import GameContext, PlayerGameState, TeamGameState
@@ -34,6 +35,24 @@ def _save_vegas_cache(cache: dict) -> None:
 _vegas_cache: dict[str, dict] = _load_vegas_cache()
 
 
+_DNP_LOG_MAX_AGE_DAYS = 14
+
+
+@lru_cache(maxsize=1)
+def _logs_are_fresh() -> bool:
+    """True if the DB's newest game log is recent enough for absence signals to mean anything."""
+    try:
+        conn = sqlite3.connect(str(_DB_PATH))
+        latest = conn.execute("SELECT MAX(game_date) FROM player_game_logs").fetchone()[0]
+        conn.close()
+        if not latest:
+            return False
+        age = datetime.now() - datetime.strptime(latest, "%Y-%m-%d")
+        return age <= timedelta(days=_DNP_LOG_MAX_AGE_DAYS)
+    except Exception:
+        return False
+
+
 def _recent_dnp(player_id: str) -> tuple[bool, str | None]:
     """
     Returns (is_dnp, reason) for the player.
@@ -43,8 +62,12 @@ def _recent_dnp(player_id: str) -> tuple[bool, str | None]:
       2. Absence streak: player missing from 3+ of their team's last 5 game
          dates (no log entry at all). This is the stronger signal for playoff
          injuries — injured players simply aren't in the box score.
+
+    Both signals only look at the most recent logged games, so they are ignored when
+    those games are stale (offseason / new season before logs refresh) — otherwise
+    anyone hurt at the end of last season would be flagged out for opening week.
     """
-    if not _DB_PATH.exists():
+    if not _DB_PATH.exists() or not _logs_are_fresh():
         return False, None
     try:
         conn = sqlite3.connect(str(_DB_PATH))

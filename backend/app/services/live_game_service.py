@@ -27,6 +27,24 @@ from app.simulation.state import GameContext
 
 logger = logging.getLogger(__name__)
 
+# projection_service / prediction_engine treat playoff_intensity >= 0.55 as a playoff game.
+_REGULAR_SEASON_INTENSITY = 0.40
+
+
+def _is_playoff_game(game_id: str) -> bool:
+    """NBA ids: 004 = playoffs, 002 = regular season, 001 = preseason. Team-based
+    predictions have no real id, so fall back to the calendar playoff window."""
+    if game_id.startswith("004"):
+        return True
+    if game_id.startswith(("001", "002")):
+        return False
+    today = datetime.now()
+    return today.month in (5, 6) or (today.month == 4 and today.day >= 16)
+
+
+def _playoff_intensity(game_id: str, playoff_value: float) -> float:
+    return playoff_value if _is_playoff_game(game_id) else _REGULAR_SEASON_INTENSITY
+
 
 _GAME_CACHE_PATH = (
     __import__("pathlib").Path(__file__).parent.parent.parent / "data" / "last_game_cache.json"
@@ -470,7 +488,7 @@ class LiveGameService:
         ctx = GameContext(
             game_id=game_id, quarter=0, clock="", home_team=home_team, away_team=away_team,
             score_margin=0, home_advantage=2.4, overtime_probability=0.02, momentum=0.0,
-            fatigue_pressure=0.5, whistle_tightness=0.48, playoff_intensity=0.55,
+            fatigue_pressure=0.5, whistle_tightness=0.48, playoff_intensity=_playoff_intensity(game_id, 0.55),
             live_pace_multiplier=1.0, injury_risk_flags=[], back_to_back=False,
             home_vegas_total=None, away_vegas_total=None,
         )
@@ -639,7 +657,7 @@ class LiveGameService:
             momentum=0.0,
             fatigue_pressure=0.5,
             whistle_tightness=0.48,
-            playoff_intensity=0.55,
+            playoff_intensity=_playoff_intensity(game_id, 0.55),
             live_pace_multiplier=1.0,
             injury_risk_flags=[],
             back_to_back=False,
@@ -812,7 +830,10 @@ class LiveGameService:
             momentum=self._estimate_momentum(home_team.score, away_team.score),
             fatigue_pressure=min(0.75, self._average_fatigue(home_team.players + away_team.players) + quarter * 0.05),
             whistle_tightness=0.48,
-            playoff_intensity=0.68 if "Conf." in (scoreboard_game.get("gameLabel") or "") else 0.60,
+            playoff_intensity=_playoff_intensity(
+                str(scoreboard_game.get("gameId") or ""),
+                0.68 if "Conf." in (scoreboard_game.get("gameLabel") or "") else 0.60,
+            ),
             live_pace_multiplier=pace_multiplier,
             injury_risk_flags=[],
             back_to_back=False,
