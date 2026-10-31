@@ -13,6 +13,7 @@ from app.simulation.state import GameContext
 
 _DB_PATH = Path(__file__).parent.parent.parent / "data" / "nba_training.db"
 _SCORE_CACHE_PATH = Path(__file__).parent.parent.parent / "data" / "score_cache.json"
+_CALIBRATION_PATH = Path(__file__).parent.parent.parent / "data" / "models" / "calibration.json"
 _GAME_MINUTES = 240.0
 _LEAGUE_AVG_DEF_RTG = 114.0  # League-average defensive rating used for opp-adjustment
 _LEAGUE_AVG_TOV = 14.0       # League-average team turnovers per game
@@ -1084,11 +1085,33 @@ def _minute_shares(projections: list, avg_min: dict) -> dict[str, float]:
     return shares
 
 
-def _rotation_points(projections: list, avg_min: dict, play_prob: dict) -> float:
-    """Expected team points from the 240-minute fill (see _minute_shares)."""
+def _load_pts_bias() -> float:
+    """Per-player points the model under-predicts by on held-out games (train_model.py)."""
+    try:
+        return max(0.0, -float(json.loads(_CALIBRATION_PATH.read_text()).get("raw_bias_pts", 0.0)))
+    except Exception:
+        return 0.0
+
+
+_PTS_BIAS = _load_pts_bias()
+
+# Regular-season team-total player estimate still ran ~12% below the league scoring
+# average (mean ~105 vs 115.6 across 120 team-games on current rosters, after the
+# 240-minute fill and _PTS_BIAS), while the pace estimate was within 2 pts. Re-measure
+# with a fresh sample after retraining or large roster changes.
+_RS_PLAYER_EST_CALIBRATION = 1.08
+
+
+def _rotation_points(projections: list, avg_min: dict, play_prob: dict, pts_bias: float = 0.0) -> float:
+    """Expected team points from the 240-minute fill (see _minute_shares).
+
+    pts_bias is added to each scoring player's mean to correct the model's measured
+    under-prediction; pass it for the team-total estimate, not for per-player scaling.
+    """
     shares = _minute_shares(projections, avg_min)
     return sum(
-        p.projected_stats.mean.points * play_prob.get(p.player_id, 0.75) * shares.get(p.player_id, 0.0)
+        (p.projected_stats.mean.points + (pts_bias if p.projected_stats.mean.points > 0 else 0.0))
+        * play_prob.get(p.player_id, 0.75) * shares.get(p.player_id, 0.0)
         for p in projections
         if p.availability_status != "dnp"
     )
@@ -1711,7 +1734,7 @@ class ProjectionService:
             # XGBoost predicts full-game stats per player, already calibrated to that
             # player's typical minutes. play_prob is a DNP-risk discount only, and the
             # 240-minute fill keeps a deep roster from being counted past a real game.
-            prob_weighted_pts = _rotation_points(projections, avg_min, play_prob)
+            prob_weighted_pts = _rotation_points(projections, avg_min, play_prob, _PTS_BIAS)
             player_estimate = prob_weighted_pts
 
             # Recent team form: hot teams score more, cold teams score less
@@ -1757,6 +1780,7 @@ class ProjectionService:
             # calibration layers add noise rather than signal. Use a clean
             # player + Vegas + pace blend identical to the original model.
             if not is_playoffs:
+                player_estimate *= _RS_PLAYER_EST_CALIBRATION
                 _team_hca = team_hca or {"home_off": 1.012, "away_off": 0.988, "home_def": 0.993}
                 _opp_hca  = opp_hca  or {"home_off": 1.012, "away_off": 0.988, "home_def": 0.993}
                 if is_home:
@@ -1775,7 +1799,7 @@ class ProjectionService:
                     # (now without minute_scale bias) is an accurate pre-game signal.
                     blended = player_estimate * 0.40 + pace_est * 0.10 + vegas_implied * 0.50
                 else:
-                    blended = player_estimate * 0.65 + pace_est * 0.35
+                    blended = player_estimate * 0.50 + pace_est * 0.50
                 # Regular season flat adjustments: road fatigue + motivation + H2H
                 flat_adj = flat + road_fatigue + motivation_factor + h2h_factor
                 logger.debug(
